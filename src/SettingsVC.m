@@ -1161,6 +1161,7 @@ extern NSString *lcAppUrlScheme;
 				infoDict[@"GCSupportsControllerUserInteraction"] = @YES;
 				infoDict[@"GCSupportsGameMode"] = @YES;
 				infoDict[@"LSApplicationCategoryType"] = @"public.app-category.games";
+				infoDict[@"CADisableMinimumFrameDuration"] = @YES;
 				infoDict[@"CADisableMinimumFrameDurationOnPhone"] = @YES;
 				infoDict[@"UISupportsDocumentBrowser"] = @YES; // is this necessary? dunno
 				infoDict[@"UIFileSharingEnabled"] = @YES;
