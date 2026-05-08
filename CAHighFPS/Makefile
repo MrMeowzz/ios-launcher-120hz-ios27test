@@ -1,12 +1,11 @@
-$THEOS/toolchain/linux/iphone/bin/clang \
-    -target arm64-apple-ios15.0 \
-    -isysroot $THEOS/sdks/iPhoneOS16.5.sdk \
-    -shared \
-    -fmodules \
-    -fobjc-arc \
-    -framework Foundation \
-    -framework QuartzCore \
-    -o CAHighFPS.dylib \
-    Tweak.m
+ARCHS := arm64
+TARGET := iphone:clang:latest:15.0
 
-ldid -S CAHighFPS.dylib
+include $(THEOS)/makefiles/common.mk
+
+LIBRARY_NAME = CAHighFPS
+CAHighFPS_FILES = Tweak.m
+CAHighFPS_CFLAGS = -fobjc-arc -fmodules
+CAHighFPS_FRAMEWORKS = Foundation QuartzCore
+
+include $(THEOS_MAKE_PATH)/library.mk
