@@ -1,105 +1,21 @@
-#import <objc/runtime.h>
-#import <objc/message.h>
-#import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <objc/runtime.h>
 
-// ---- CADynamicFrameRateSource ----
+static void (*orig_setPreferredFrameRateRange)(id self, SEL _cmd, CAFrameRateRange range);
 
-static void (*orig_CDFRS_setPreferredFrameRateRange)(id, SEL, CAFrameRateRange);
-static void swiz_CDFRS_setPreferredFrameRateRange(id self, SEL _cmd, CAFrameRateRange range) {
-    range.minimum = 120;
-    range.preferred = 120;
-    range.maximum = 120;
-    orig_CDFRS_setPreferredFrameRateRange(self, _cmd, range);
-}
-
-static void (*orig_CDFRS_setPaused)(id, SEL, BOOL);
-static void swiz_CDFRS_setPaused(id self, SEL _cmd, BOOL arg1) {
-    // do nothing
-}
-
-static BOOL (*orig_CDFRS_isPaused)(id, SEL);
-static BOOL swiz_CDFRS_isPaused(id self, SEL _cmd) {
-    return NO;
-}
-
-static void (*orig_CDFRS_setHighFrameRateReasons)(id, SEL, const unsigned*, unsigned long long);
-static void swiz_CDFRS_setHighFrameRateReasons(id self, SEL _cmd, const unsigned* arg1, unsigned long long arg2) {
-    // do nothing
-}
-
-// ---- CADisplayLink ----
-
-static void (*orig_CDL_setPreferredFrameRateRange)(id, SEL, CAFrameRateRange);
-static void swiz_CDL_setPreferredFrameRateRange(id self, SEL _cmd, CAFrameRateRange range) {
-    range.minimum = 120;
-    range.preferred = 120;
-    range.maximum = 120;
-    orig_CDL_setPreferredFrameRateRange(self, _cmd, range);
-}
-
-static void (*orig_CDL_setPaused)(id, SEL, BOOL);
-static void swiz_CDL_setPaused(id self, SEL _cmd, BOOL arg1) {
-    orig_CDL_setPaused(self, _cmd, arg1);
-}
-
-static BOOL (*orig_CDL_isPaused)(id, SEL);
-static BOOL swiz_CDL_isPaused(id self, SEL _cmd) {
-    return NO;
-}
-
-static void (*orig_CDL_setFrameInterval)(id, SEL, NSInteger);
-static void swiz_CDL_setFrameInterval(id self, SEL _cmd, NSInteger interval) {
-    orig_CDL_setFrameInterval(self, _cmd, 1);
-    if ([self respondsToSelector:@selector(setPreferredFramesPerSecond:)])
-        ((void(*)(id,SEL,NSInteger))objc_msgSend)(self, @selector(setPreferredFramesPerSecond:), 120);
-}
-
-static void (*orig_CDL_setPreferredFramesPerSecond)(id, SEL, NSInteger);
-static void swiz_CDL_setPreferredFramesPerSecond(id self, SEL _cmd, NSInteger fps) {
-    orig_CDL_setPreferredFramesPerSecond(self, _cmd, 120);
-}
-
-static void (*orig_CDL_setHighFrameRateReasons)(id, SEL, const unsigned*, unsigned long long);
-static void swiz_CDL_setHighFrameRateReasons(id self, SEL _cmd, const unsigned* arg1, unsigned long long arg2) {
-    // do nothing
-}
-
-// ---- helpers ----
-
-static void swizzle(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
-    Method m = class_getInstanceMethod(cls, sel);
-    if (!m) {
-        fprintf(stderr, "[CAHighFPS] method not found: %s\n", sel_getName(sel));
-        return;
-    }
-    *oldImp = method_getImplementation(m);
-    method_setImplementation(m, newImp);
+static void swizzled_setPreferredFrameRateRange(id self, SEL _cmd, CAFrameRateRange range) {
+    CAFrameRateRange newRange = CAFrameRateRangeMake(60, 120, 120);
+    orig_setPreferredFrameRateRange(self, _cmd, newRange);
 }
 
 __attribute__((constructor))
 static void init() {
-    fprintf(stderr, "[CAHighFPS] loaded\n");
-
-    Class cdfrs = objc_getClass("CADynamicFrameRateSource");
-    if (cdfrs) {
-        swizzle(cdfrs, @selector(setPreferredFrameRateRange:), (IMP)swiz_CDFRS_setPreferredFrameRateRange, (IMP*)&orig_CDFRS_setPreferredFrameRateRange);
-        swizzle(cdfrs, @selector(setPaused:),                 (IMP)swiz_CDFRS_setPaused,                  (IMP*)&orig_CDFRS_setPaused);
-        swizzle(cdfrs, @selector(isPaused),                   (IMP)swiz_CDFRS_isPaused,                   (IMP*)&orig_CDFRS_isPaused);
-        swizzle(cdfrs, @selector(setHighFrameRateReasons:count:), (IMP)swiz_CDFRS_setHighFrameRateReasons, (IMP*)&orig_CDFRS_setHighFrameRateReasons);
-    } else {
-        fprintf(stderr, "[CAHighFPS] CADynamicFrameRateSource not found\n");
-    }
-
-    Class cdl = objc_getClass("CADisplayLink");
-    if (cdl) {
-        swizzle(cdl, @selector(setPreferredFrameRateRange:),  (IMP)swiz_CDL_setPreferredFrameRateRange,   (IMP*)&orig_CDL_setPreferredFrameRateRange);
-        swizzle(cdl, @selector(setPaused:),                   (IMP)swiz_CDL_setPaused,                    (IMP*)&orig_CDL_setPaused);
-        swizzle(cdl, @selector(isPaused),                     (IMP)swiz_CDL_isPaused,                     (IMP*)&orig_CDL_isPaused);
-        swizzle(cdl, @selector(setFrameInterval:),            (IMP)swiz_CDL_setFrameInterval,             (IMP*)&orig_CDL_setFrameInterval);
-        swizzle(cdl, @selector(setPreferredFramesPerSecond:), (IMP)swiz_CDL_setPreferredFramesPerSecond,  (IMP*)&orig_CDL_setPreferredFramesPerSecond);
-        swizzle(cdl, @selector(setHighFrameRateReasons:count:), (IMP)swiz_CDL_setHighFrameRateReasons,   (IMP*)&orig_CDL_setHighFrameRateReasons);
-    } else {
-        fprintf(stderr, "[CAHighFPS] CADisplayLink not found\n");
+    Class cls = objc_getClass("CADisplayLink");
+    SEL sel = @selector(setPreferredFrameRateRange:);
+    Method method = class_getInstanceMethod(cls, sel);
+    if (method) {
+        orig_setPreferredFrameRateRange = (void *)method_getImplementation(method);
+        method_setImplementation(method, (IMP)swizzled_setPreferredFrameRateRange);
     }
 }
