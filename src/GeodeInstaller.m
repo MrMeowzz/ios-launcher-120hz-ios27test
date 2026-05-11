@@ -20,6 +20,8 @@ typedef void (^DecompressCompletion)(NSError* _Nullable error);
 	}
 	_root.optionalTextLabel.text = @"launcher.status.getting-ver".loc;
 	NSURLRequest* request = [NSURLRequest requestWithURL:[NSURL URLWithString:[Utils getGeodeReleaseURL]]];
+	NSString* urlString = [Utils getGeodeReleaseURL];
+	AppLog(@"URL String: %@", urlString); // Should print the full URL
 	NSURLSession* session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration] delegate:self delegateQueue:nil];
 	NSURLSessionDataTask* dataTask = [session dataTaskWithRequest:request completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
 		if (error) {
