@@ -533,7 +533,7 @@ for func in list:
 	return [hexString copy];
 }
 + (void)startUnzip:(void (^)(NSString* doForce))completionHandler {
-	return completionHandler(nil);
+	// return completionHandler(nil);
 	NSFileManager* fm = [NSFileManager defaultManager];
 	NSError* error;
 	BOOL isDir = NO;
@@ -568,6 +568,21 @@ for func in list:
 						dispatch_semaphore_signal(sema);
 					}];
 					dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER); // is this really safe...
+					// copy .ios.dylib to unzipped/binaries/ so it gets signed
+					NSString* unzipBinModsPath = [[LCPath dataPath] URLByAppendingPathComponent:@"game/geode/unzipped/binaries"].path;
+					[fm createDirectoryAtPath:unzipBinModsPath withIntermediateDirectories:YES attributes:nil error:nil];
+					NSString* dylibName = [NSString stringWithFormat:@"%@.ios.dylib", modName];
+					NSString* dylibSrc = [extractTarget stringByAppendingPathComponent:dylibName];
+					NSString* dylibDst = [unzipBinModsPath stringByAppendingPathComponent:dylibName];
+					if ([fm fileExistsAtPath:dylibSrc] && ![fm fileExistsAtPath:dylibDst]) {
+					    NSError* copyErr;
+					    [fm copyItemAtPath:dylibSrc toPath:dylibDst error:&copyErr];
+					    if (copyErr) {
+					        AppLog(@"[startUnzip] Failed to copy %@ to binaries/: %@", dylibName, copyErr);
+					    } else {
+					        AppLog(@"[startUnzip] Copied %@ to binaries/", dylibName);
+					    }
+					}
 					NSString *datePath = [extractTarget stringByAppendingPathComponent:@"/modified-at"];
 					NSDictionary<NSFileAttributeKey, id> *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:extractTarget error:nil];
 					if (!attrs) continue;
@@ -579,7 +594,17 @@ for func in list:
 			}
 		}
 	}
-	completionHandler(forceSign);
+	if (forceSign) {
+        [LCUtils signModsNew:[[LCPath dataPath] URLByAppendingPathComponent:@"game/geode"]
+            force:NO
+            progressHandler:^(NSProgress* p) {}
+            completion:^(NSError* error) {
+                if (error) AppLog(@"[startUnzip] Signing error: %@", error);
+                completionHandler(forceSign);
+            }];
+    } else {
+        completionHandler(forceSign);
+    }
 }
 + (void)patchGeode:(void (^)(BOOL success, NSString* error))completionHandler {
 	if ([[Utils getPrefs] boolForKey:@"ENTERPRISE_MODE"]) {
