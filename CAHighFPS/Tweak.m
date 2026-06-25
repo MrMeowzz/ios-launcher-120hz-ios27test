@@ -144,7 +144,49 @@ static void swiz_CCDirectorCaller_doCaller(id self, SEL _cmd, id sender) {
     }
 
     if (now - lastCallerLogTime >= 1.0) {
-        logLine([NSString stringWithFormat:@"[CAHighFPS] CCDirectorCaller doCaller ticks/sec = %d", callerTickCount]);
+        double expectedFPS = 0.0;
+        double durationFPS = 0.0;
+        NSInteger preferredFPS = -1;
+        double rangeMin = -1.0;
+        double rangePreferred = -1.0;
+        double rangeMax = -1.0;
+
+        if (sender && [sender isKindOfClass:[CADisplayLink class]]) {
+            CADisplayLink* link = (CADisplayLink*)sender;
+
+            if (link.targetTimestamp > link.timestamp) {
+                expectedFPS = 1.0 / (link.targetTimestamp - link.timestamp);
+            }
+
+            if (link.duration > 0) {
+                durationFPS = 1.0 / link.duration;
+            }
+
+            if ([link respondsToSelector:@selector(preferredFramesPerSecond)]) {
+                preferredFPS = link.preferredFramesPerSecond;
+            }
+
+            if ([link respondsToSelector:@selector(preferredFrameRateRange)]) {
+                CAFrameRateRange range = link.preferredFrameRateRange;
+                rangeMin = range.minimum;
+                rangePreferred = range.preferred;
+                rangeMax = range.maximum;
+            }
+
+            logLine([NSString stringWithFormat:
+                @"[CAHighFPS] CCDirectorCaller ticks/sec=%d expectedFPS=%.2f durationFPS=%.2f preferredFPS=%ld range=(%.0f, %.0f, %.0f)",
+                callerTickCount,
+                expectedFPS,
+                durationFPS,
+                (long)preferredFPS,
+                rangeMin,
+                rangePreferred,
+                rangeMax
+            ]);
+        } else {
+            logLine([NSString stringWithFormat:@"[CAHighFPS] CCDirectorCaller ticks/sec=%d sender=%@", callerTickCount, sender]);
+        }
+
         callerTickCount = 0;
         lastCallerLogTime = now;
     }
