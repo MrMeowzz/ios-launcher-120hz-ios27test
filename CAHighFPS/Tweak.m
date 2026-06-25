@@ -14,6 +14,7 @@ static void logLine(NSString* line) {
 
 static void forceDisplayLink120(id link, const char* reason);
 static void forceDisplayLink120Silent(id link);
+static void startHighFPSPrimer(void);
 
 // ---- original funcs ----
 
@@ -31,6 +32,12 @@ static void (*orig_CCDirectorCaller_doCaller)(id, SEL, id);
 
 static CFTimeInterval lastCallerLogTime = 0;
 static int callerTickCount = 0;
+
+// ---- primer display link ----
+
+static CADisplayLink* highFPSPrimerLink = nil;
+static id highFPSPrimerTarget = nil;
+static BOOL primerLogged = NO;
 
 // ---- exported test ----
 
@@ -63,6 +70,52 @@ static void forceDisplayLink120(id link, const char* reason) {
 
     logLine([NSString stringWithFormat:@"[CAHighFPS] forceDisplayLink120: %s %@", reason, link]);
     forceDisplayLink120Silent(link);
+
+    if ([link respondsToSelector:@selector(preferredFrameRateRange)]) {
+        CAFrameRateRange current = ((CAFrameRateRange (*)(id, SEL))objc_msgSend)(link, @selector(preferredFrameRateRange));
+
+        logLine([NSString stringWithFormat:@"[CAHighFPS] current range min=%f preferred=%f max=%f",
+                 current.minimum,
+                 current.preferred,
+                 current.maximum]);
+    }
+}
+
+// ---- 120Hz primer display link ----
+
+@interface CAHighFPSPrimerTarget : NSObject
+@end
+
+@implementation CAHighFPSPrimerTarget
+
+- (void)primerTick:(CADisplayLink*)link {
+    forceDisplayLink120Silent(link);
+
+    if (!primerLogged) {
+        primerLogged = YES;
+        logLine(@"[CAHighFPS] primer display link is ticking");
+    }
+}
+
+@end
+
+static void startHighFPSPrimer(void) {
+    if (highFPSPrimerLink) {
+        forceDisplayLink120(highFPSPrimerLink, "existing primer");
+        return;
+    }
+
+    highFPSPrimerTarget = [CAHighFPSPrimerTarget new];
+
+    highFPSPrimerLink = [CADisplayLink displayLinkWithTarget:highFPSPrimerTarget selector:@selector(primerTick:)];
+
+    forceDisplayLink120(highFPSPrimerLink, "startHighFPSPrimer before add");
+
+    [highFPSPrimerLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+
+    forceDisplayLink120(highFPSPrimerLink, "startHighFPSPrimer after add");
+
+    logLine(@"[CAHighFPS] started 120Hz primer display link");
 }
 
 // ---- CADynamicFrameRateSource ----
@@ -80,8 +133,6 @@ static void swiz_CDFRS_setPreferredFrameRateRange(id self, SEL _cmd, CAFrameRate
 }
 
 // ---- CCDirectorCaller ----
-// This is the real Cocos object your log showed:
-// target=<CCDirectorCaller ...> selector=doCaller:
 
 static void swiz_CCDirectorCaller_doCaller(id self, SEL _cmd, id sender) {
     callerTickCount++;
@@ -98,7 +149,6 @@ static void swiz_CCDirectorCaller_doCaller(id self, SEL _cmd, id sender) {
         lastCallerLogTime = now;
     }
 
-    // sender should be the CADisplayLink. Keep it forced, but do not spam logs every frame.
     forceDisplayLink120Silent(sender);
 
     if (orig_CCDirectorCaller_doCaller) {
@@ -285,14 +335,23 @@ static void init() {
     logLine(@"[CAHighFPS] loaded");
 
     applySwizzles();
+    startHighFPSPrimer();
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        logLine(@"[CAHighFPS] reapplying swizzles after 0.5s");
+        applySwizzles();
+        startHighFPSPrimer();
+    });
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         logLine(@"[CAHighFPS] reapplying swizzles after 2s");
         applySwizzles();
+        startHighFPSPrimer();
     });
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         logLine(@"[CAHighFPS] reapplying swizzles after 5s");
         applySwizzles();
+        startHighFPSPrimer();
     });
 }

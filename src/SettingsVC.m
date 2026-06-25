@@ -956,6 +956,11 @@ extern NSString *lcAppUrlScheme;
 			return ![[Utils getPrefs] boolForKey:@"JITLESS"] && ![[Utils getPrefs] boolForKey:@"FORCE_CERT_JIT"];
 		} visible:nil prefsKey:nil switchTag:0 action:^{
 			if ([VerifyInstall verifyGeodeInstalled]) {
+				if ([[Utils getPrefs] boolForKey:@"USE_MAX_FPS"]) {
+					[[Utils getPrefs] setBool:NO forKey:@"USE_MAX_FPS"];
+					[[Utils getPrefs] synchronize];
+					AppLog(@"Disabled 120Hz before deleting/redownloading Geode. Re-enable 120Hz after Geode installs.");
+				}
 				NSError* err;
 				NSString* docPath = [fm URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].lastObject.path;
 				NSString* tweakPath = [NSString stringWithFormat:@"%@/Tweaks/Geode.ios.dylib", docPath];
@@ -1562,7 +1567,7 @@ extern NSString *lcAppUrlScheme;
 							AppLog(@"Copied CAHighFPS.dylib");
 						}
 					}
-					
+
 					NSString* infoPath = [bundlePath URLByAppendingPathComponent:@"Info.plist"].path;
 					NSMutableDictionary* infoDict = [NSMutableDictionary dictionaryWithContentsOfFile:infoPath];
 
