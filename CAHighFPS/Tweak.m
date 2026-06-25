@@ -2,10 +2,12 @@
 #import <objc/message.h>
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
+#import "../src/components/LogUtils.h"
 
 #define TARGET_FPS 120
 
 static void logLine(NSString* line) {
+    AppLog(@"%@", line);
     NSLog(@"%@", line);
     fprintf(stderr, "%s\n", line.UTF8String);
 }
