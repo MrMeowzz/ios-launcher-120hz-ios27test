@@ -1526,20 +1526,41 @@ extern NSString *lcAppUrlScheme;
 						if (![fm fileExistsAtPath:frameworksPath isDirectory:&isDir]) {
 							[fm createDirectoryAtPath:frameworksPath withIntermediateDirectories:YES attributes:nil error:nil];
 						}
+
 						AppLog(@"Now copying Frameworks dir...");
 						AppLog(@"Dir is %@", [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Frameworks/ANGLEGLKit.framework"]);
-						[fm copyItemAtPath:[NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Frameworks/ANGLEGLKit.framework"] toPath:[frameworksPath stringByAppendingPathComponent:@"ANGLEGLKit.framework"] error:nil];
-						[fm copyItemAtPath:[NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Frameworks/libEGL.framework"] toPath:[frameworksPath stringByAppendingPathComponent:@"libEGL.framework"] error:nil];
-						[fm copyItemAtPath:[NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Frameworks/libGLESv2.framework"] toPath:[frameworksPath stringByAppendingPathComponent:@"libGLESv2.framework"] error:nil];
-						if ([[Utils getPrefs] boolForKey:@"ENTERPRISE_MODE"]) {
-							NSString* tweakLoaderPath = [bundlePath URLByAppendingPathComponent:@"CAHighFPS.dylib"].path;
-							if (![fm fileExistsAtPath:tweakLoaderPath]) {
-								NSString* target = [NSBundle.mainBundle.privateFrameworksPath stringByAppendingPathComponent:@"CAHighFPS.dylib"];
-								[fm copyItemAtPath:target toPath:tweakLoaderPath error:nil];
-							}
-						}
+
+						[fm copyItemAtPath:[NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Frameworks/ANGLEGLKit.framework"]
+									toPath:[frameworksPath stringByAppendingPathComponent:@"ANGLEGLKit.framework"]
+									error:nil];
+
+						[fm copyItemAtPath:[NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Frameworks/libEGL.framework"]
+									toPath:[frameworksPath stringByAppendingPathComponent:@"libEGL.framework"]
+									error:nil];
+
+						[fm copyItemAtPath:[NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Frameworks/libGLESv2.framework"]
+									toPath:[frameworksPath stringByAppendingPathComponent:@"libGLESv2.framework"]
+									error:nil];
 					} else {
-						AppLog(@"Frameworks dir already exists, skipping...");
+						AppLog(@"Frameworks dir already exists, skipping ANGLE copy...");
+					}
+
+					if ([[Utils getPrefs] boolForKey:@"ENTERPRISE_MODE"]) {
+						NSString* caHighFPSPath = [bundlePath URLByAppendingPathComponent:@"CAHighFPS.dylib"].path;
+						NSString* caHighFPSTarget = [NSBundle.mainBundle.privateFrameworksPath stringByAppendingPathComponent:@"CAHighFPS.dylib"];
+
+						if ([fm fileExistsAtPath:caHighFPSPath]) {
+							[fm removeItemAtPath:caHighFPSPath error:nil];
+						}
+
+						NSError* caErr = nil;
+						[fm copyItemAtPath:caHighFPSTarget toPath:caHighFPSPath error:&caErr];
+
+						if (caErr) {
+							AppLog(@"Failed to copy CAHighFPS.dylib: %@", caErr);
+						} else {
+							AppLog(@"Copied CAHighFPS.dylib");
+						}
 					}
 					AppLog(@"Patching GD with new load commands...");
 					NSString* execPath = [bundlePath URLByAppendingPathComponent:@"GeometryJump"].path;
