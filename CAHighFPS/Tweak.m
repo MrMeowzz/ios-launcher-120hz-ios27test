@@ -24,6 +24,10 @@ static void (*orig_CDL_addToRunLoop)(id, SEL, NSRunLoop*, NSRunLoopMode);
 
 static void (*orig_CDFRS_setPreferredFrameRateRange)(id, SEL, CAFrameRateRange);
 
+static void (*orig_CCDirector_setAnimationInterval)(id, SEL, double);
+static double (*orig_CCDirector_getAnimationInterval)(id, SEL);
+static double (*orig_CCDirector_animationInterval)(id, SEL);
+
 // ---- exported test ----
 
 __attribute__((visibility("default")))
@@ -62,6 +66,28 @@ static void swiz_CDFRS_setPreferredFrameRateRange(id self, SEL _cmd, CAFrameRate
     range.maximum = TARGET_FPS;
 
     orig_CDFRS_setPreferredFrameRateRange(self, _cmd, range);
+}
+
+// ---- Cocos2d / GD frame interval ----
+
+static void swiz_CCDirector_setAnimationInterval(id self, SEL _cmd, double interval) {
+    double forced = 1.0 / TARGET_FPS;
+
+    logLine([NSString stringWithFormat:@"[CAHighFPS] CCDirector setAnimationInterval forced from %f to %f", interval, forced]);
+
+    if (orig_CCDirector_setAnimationInterval) {
+        orig_CCDirector_setAnimationInterval(self, _cmd, forced);
+    }
+}
+
+static double swiz_CCDirector_getAnimationInterval(id self, SEL _cmd) {
+    logLine(@"[CAHighFPS] CCDirector getAnimationInterval forced to 1/120");
+    return 1.0 / TARGET_FPS;
+}
+
+static double swiz_CCDirector_animationInterval(id self, SEL _cmd) {
+    logLine(@"[CAHighFPS] CCDirector animationInterval forced to 1/120");
+    return 1.0 / TARGET_FPS;
 }
 
 // ---- CADisplayLink setters ----
@@ -207,6 +233,35 @@ static void applySwizzles(void) {
         );
     } else {
         logLine(@"[CAHighFPS] CADisplayLink not found");
+    }
+
+    Class ccDirector = objc_getClass("CCDirector");
+
+    if (ccDirector) {
+        logLine(@"[CAHighFPS] CCDirector found");
+
+        swizzleInstance(
+            ccDirector,
+            @selector(setAnimationInterval:),
+            (IMP)swiz_CCDirector_setAnimationInterval,
+            (IMP*)&orig_CCDirector_setAnimationInterval
+        );
+
+        swizzleInstance(
+            ccDirector,
+            @selector(getAnimationInterval),
+            (IMP)swiz_CCDirector_getAnimationInterval,
+            (IMP*)&orig_CCDirector_getAnimationInterval
+        );
+
+        swizzleInstance(
+            ccDirector,
+            @selector(animationInterval),
+            (IMP)swiz_CCDirector_animationInterval,
+            (IMP*)&orig_CCDirector_animationInterval
+        );
+    } else {
+        logLine(@"[CAHighFPS] CCDirector not found");
     }
 }
 
