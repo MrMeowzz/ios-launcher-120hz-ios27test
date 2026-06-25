@@ -31,6 +31,15 @@ include $(THEOS_MAKE_PATH)/application.mk
 SUBPROJECTS += ZSign TweakLoader WebServerLib PlatformConsole TestJITLess EnterpriseLoader CAHighFPS
 include $(THEOS_MAKE_PATH)/aggregate.mk
 
+after-stage::
+	@echo "Copying ANGLE frameworks into launcher Frameworks folder..."
+	@mkdir -p "$(THEOS_STAGING_DIR)/Applications/Geode.app/Frameworks"
+	@rm -rf "$(THEOS_STAGING_DIR)/Applications/Geode.app/Frameworks/ANGLEGLKit.framework"
+	@rm -rf "$(THEOS_STAGING_DIR)/Applications/Geode.app/Frameworks/libEGL.framework"
+	@rm -rf "$(THEOS_STAGING_DIR)/Applications/Geode.app/Frameworks/libGLESv2.framework"
+	@cp -R "Resources/GDFrameworks/ANGLEGLKit.framework" "$(THEOS_STAGING_DIR)/Applications/Geode.app/Frameworks/"
+	@cp -R "Resources/GDFrameworks/libEGL.framework" "$(THEOS_STAGING_DIR)/Applications/Geode.app/Frameworks/"
+	@cp -R "Resources/GDFrameworks/libGLESv2.framework" "$(THEOS_STAGING_DIR)/Applications/Geode.app/Frameworks/"
 
 after-package::
 ifeq ($(TROLLSTORE),1)
