@@ -12,9 +12,7 @@ static void logLine(NSString* line) {
     fprintf(stderr, "%s\n", line.UTF8String);
 }
 
-static void forceDisplayLink120(id link, const char* reason);
-static void forceDisplayLink120Silent(id link);
-static void startHighFPSPrimer(void);
+static void forceDisplayLink120(id link);
 
 // ---- original funcs ----
 
@@ -23,21 +21,6 @@ static void (*orig_CDL_setPreferredFrameRateRange)(id, SEL, CAFrameRateRange);
 static void (*orig_CDL_setPreferredFramesPerSecond)(id, SEL, NSInteger);
 static id   (*orig_CDL_displayLinkWithTarget)(id, SEL, id, SEL);
 static void (*orig_CDL_addToRunLoop)(id, SEL, NSRunLoop*, NSRunLoopMode);
-
-static void (*orig_CDFRS_setPreferredFrameRateRange)(id, SEL, CAFrameRateRange);
-
-static void (*orig_CCDirectorCaller_doCaller)(id, SEL, id);
-
-// ---- tick counter ----
-
-static CFTimeInterval lastCallerLogTime = 0;
-static int callerTickCount = 0;
-
-// ---- primer display link ----
-
-static CADisplayLink* highFPSPrimerLink = nil;
-static id highFPSPrimerTarget = nil;
-static BOOL primerLogged = NO;
 
 // ---- exported test ----
 
@@ -48,7 +31,7 @@ void CAHighFPS_TestLog(void) {
 
 // ---- helpers ----
 
-static void forceDisplayLink120Silent(id link) {
+static void forceDisplayLink120(id link) {
     if (!link) return;
 
     if ([link respondsToSelector:@selector(setFrameInterval:)] && orig_CDL_setFrameInterval) {
@@ -65,154 +48,17 @@ static void forceDisplayLink120Silent(id link) {
     }
 }
 
-static void forceDisplayLink120(id link, const char* reason) {
-    if (!link) return;
-
-    logLine([NSString stringWithFormat:@"[CAHighFPS] forceDisplayLink120: %s %@", reason, link]);
-    forceDisplayLink120Silent(link);
-
-    if ([link respondsToSelector:@selector(preferredFrameRateRange)]) {
-        CAFrameRateRange current = ((CAFrameRateRange (*)(id, SEL))objc_msgSend)(link, @selector(preferredFrameRateRange));
-
-        logLine([NSString stringWithFormat:@"[CAHighFPS] current range min=%f preferred=%f max=%f",
-                 current.minimum,
-                 current.preferred,
-                 current.maximum]);
-    }
-}
-
-// ---- 120Hz primer display link ----
-
-@interface CAHighFPSPrimerTarget : NSObject
-@end
-
-@implementation CAHighFPSPrimerTarget
-
-- (void)primerTick:(CADisplayLink*)link {
-    forceDisplayLink120Silent(link);
-
-    if (!primerLogged) {
-        primerLogged = YES;
-        logLine(@"[CAHighFPS] primer display link is ticking");
-    }
-}
-
-@end
-
-static void startHighFPSPrimer(void) {
-    if (highFPSPrimerLink) {
-        forceDisplayLink120(highFPSPrimerLink, "existing primer");
-        return;
-    }
-
-    highFPSPrimerTarget = [CAHighFPSPrimerTarget new];
-
-    highFPSPrimerLink = [CADisplayLink displayLinkWithTarget:highFPSPrimerTarget selector:@selector(primerTick:)];
-
-    forceDisplayLink120(highFPSPrimerLink, "startHighFPSPrimer before add");
-
-    [highFPSPrimerLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
-
-    forceDisplayLink120(highFPSPrimerLink, "startHighFPSPrimer after add");
-
-    logLine(@"[CAHighFPS] started 120Hz primer display link");
-}
-
-// ---- CADynamicFrameRateSource ----
-
-static void swiz_CDFRS_setPreferredFrameRateRange(id self, SEL _cmd, CAFrameRateRange range) {
-    logLine(@"[CAHighFPS] CADynamicFrameRateSource setPreferredFrameRateRange forced to 120");
-
-    range.minimum = TARGET_FPS;
-    range.preferred = TARGET_FPS;
-    range.maximum = TARGET_FPS;
-
-    if (orig_CDFRS_setPreferredFrameRateRange) {
-        orig_CDFRS_setPreferredFrameRateRange(self, _cmd, range);
-    }
-}
-
-// ---- CCDirectorCaller ----
-
-static void swiz_CCDirectorCaller_doCaller(id self, SEL _cmd, id sender) {
-    callerTickCount++;
-
-    CFTimeInterval now = CACurrentMediaTime();
-
-    if (lastCallerLogTime == 0) {
-        lastCallerLogTime = now;
-    }
-
-    if (now - lastCallerLogTime >= 1.0) {
-        double expectedFPS = 0.0;
-        double durationFPS = 0.0;
-        NSInteger preferredFPS = -1;
-        double rangeMin = -1.0;
-        double rangePreferred = -1.0;
-        double rangeMax = -1.0;
-
-        if (sender && [sender isKindOfClass:[CADisplayLink class]]) {
-            CADisplayLink* link = (CADisplayLink*)sender;
-
-            if (link.targetTimestamp > link.timestamp) {
-                expectedFPS = 1.0 / (link.targetTimestamp - link.timestamp);
-            }
-
-            if (link.duration > 0) {
-                durationFPS = 1.0 / link.duration;
-            }
-
-            if ([link respondsToSelector:@selector(preferredFramesPerSecond)]) {
-                preferredFPS = link.preferredFramesPerSecond;
-            }
-
-            if ([link respondsToSelector:@selector(preferredFrameRateRange)]) {
-                CAFrameRateRange range = link.preferredFrameRateRange;
-                rangeMin = range.minimum;
-                rangePreferred = range.preferred;
-                rangeMax = range.maximum;
-            }
-
-            logLine([NSString stringWithFormat:
-                @"[CAHighFPS] CCDirectorCaller ticks/sec=%d expectedFPS=%.2f durationFPS=%.2f preferredFPS=%ld range=(%.0f, %.0f, %.0f)",
-                callerTickCount,
-                expectedFPS,
-                durationFPS,
-                (long)preferredFPS,
-                rangeMin,
-                rangePreferred,
-                rangeMax
-            ]);
-        } else {
-            logLine([NSString stringWithFormat:@"[CAHighFPS] CCDirectorCaller ticks/sec=%d sender=%@", callerTickCount, sender]);
-        }
-
-        callerTickCount = 0;
-        lastCallerLogTime = now;
-    }
-
-    forceDisplayLink120Silent(sender);
-
-    if (orig_CCDirectorCaller_doCaller) {
-        orig_CCDirectorCaller_doCaller(self, _cmd, sender);
-    }
-}
-
 // ---- CADisplayLink setters ----
 
 static void swiz_CDL_setFrameInterval(id self, SEL _cmd, NSInteger interval) {
-    logLine([NSString stringWithFormat:@"[CAHighFPS] CADisplayLink setFrameInterval forced from %ld to 1", (long)interval]);
-
     if (orig_CDL_setFrameInterval) {
         orig_CDL_setFrameInterval(self, _cmd, 1);
     }
 
-    forceDisplayLink120(self, "setFrameInterval");
+    forceDisplayLink120(self);
 }
 
 static void swiz_CDL_setPreferredFrameRateRange(id self, SEL _cmd, CAFrameRateRange range) {
-    logLine(@"[CAHighFPS] CADisplayLink setPreferredFrameRateRange forced to 120");
-
     range.minimum = TARGET_FPS;
     range.preferred = TARGET_FPS;
     range.maximum = TARGET_FPS;
@@ -223,8 +69,6 @@ static void swiz_CDL_setPreferredFrameRateRange(id self, SEL _cmd, CAFrameRateRa
 }
 
 static void swiz_CDL_setPreferredFramesPerSecond(id self, SEL _cmd, NSInteger fps) {
-    logLine([NSString stringWithFormat:@"[CAHighFPS] CADisplayLink setPreferredFramesPerSecond forced from %ld to 120", (long)fps]);
-
     if (orig_CDL_setPreferredFramesPerSecond) {
         orig_CDL_setPreferredFramesPerSecond(self, _cmd, TARGET_FPS);
     }
@@ -239,23 +83,19 @@ static id swiz_CDL_displayLinkWithTarget(id self, SEL _cmd, id target, SEL selec
         link = orig_CDL_displayLinkWithTarget(self, _cmd, target, selector);
     }
 
-    logLine([NSString stringWithFormat:@"[CAHighFPS] CADisplayLink created target=%@ selector=%s link=%@", target, sel_getName(selector), link]);
-
-    forceDisplayLink120(link, "displayLinkWithTarget");
+    forceDisplayLink120(link);
 
     return link;
 }
 
 static void swiz_CDL_addToRunLoop(id self, SEL _cmd, NSRunLoop* runLoop, NSRunLoopMode mode) {
-    logLine([NSString stringWithFormat:@"[CAHighFPS] CADisplayLink addToRunLoop mode=%@", mode]);
-
-    forceDisplayLink120(self, "before addToRunLoop");
+    forceDisplayLink120(self);
 
     if (orig_CDL_addToRunLoop) {
         orig_CDL_addToRunLoop(self, _cmd, runLoop, mode);
     }
 
-    forceDisplayLink120(self, "after addToRunLoop");
+    forceDisplayLink120(self);
 }
 
 // ---- swizzle helpers ----
@@ -264,7 +104,6 @@ static void swizzleInstance(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
     Method m = class_getInstanceMethod(cls, sel);
 
     if (!m) {
-        logLine([NSString stringWithFormat:@"[CAHighFPS] instance method not found: %s", sel_getName(sel)]);
         return;
     }
 
@@ -276,16 +115,12 @@ static void swizzleInstance(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 
     *oldImp = currentImp;
     method_setImplementation(m, newImp);
-
-    logLine([NSString stringWithFormat:@"[CAHighFPS] swizzled instance method: %s", sel_getName(sel)]);
 }
 
 static void swizzleClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
-    Class meta = object_getClass(cls);
     Method m = class_getClassMethod(cls, sel);
 
     if (!m) {
-        logLine([NSString stringWithFormat:@"[CAHighFPS] class method not found: %s", sel_getName(sel)]);
         return;
     }
 
@@ -297,79 +132,50 @@ static void swizzleClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 
     *oldImp = currentImp;
     method_setImplementation(m, newImp);
-
-    logLine([NSString stringWithFormat:@"[CAHighFPS] swizzled class method: %s on %@", sel_getName(sel), meta]);
 }
 
 static void applySwizzles(void) {
-    Class cdfrs = objc_getClass("CADynamicFrameRateSource");
-
-    if (cdfrs) {
-        swizzleInstance(
-            cdfrs,
-            @selector(setPreferredFrameRateRange:),
-            (IMP)swiz_CDFRS_setPreferredFrameRateRange,
-            (IMP*)&orig_CDFRS_setPreferredFrameRateRange
-        );
-    } else {
-        logLine(@"[CAHighFPS] CADynamicFrameRateSource not found");
-    }
-
     Class cdl = objc_getClass("CADisplayLink");
 
-    if (cdl) {
-        swizzleInstance(
-            cdl,
-            @selector(setFrameInterval:),
-            (IMP)swiz_CDL_setFrameInterval,
-            (IMP*)&orig_CDL_setFrameInterval
-        );
-
-        swizzleInstance(
-            cdl,
-            @selector(setPreferredFrameRateRange:),
-            (IMP)swiz_CDL_setPreferredFrameRateRange,
-            (IMP*)&orig_CDL_setPreferredFrameRateRange
-        );
-
-        swizzleInstance(
-            cdl,
-            @selector(setPreferredFramesPerSecond:),
-            (IMP)swiz_CDL_setPreferredFramesPerSecond,
-            (IMP*)&orig_CDL_setPreferredFramesPerSecond
-        );
-
-        swizzleInstance(
-            cdl,
-            @selector(addToRunLoop:forMode:),
-            (IMP)swiz_CDL_addToRunLoop,
-            (IMP*)&orig_CDL_addToRunLoop
-        );
-
-        swizzleClass(
-            cdl,
-            @selector(displayLinkWithTarget:selector:),
-            (IMP)swiz_CDL_displayLinkWithTarget,
-            (IMP*)&orig_CDL_displayLinkWithTarget
-        );
-    } else {
+    if (!cdl) {
         logLine(@"[CAHighFPS] CADisplayLink not found");
+        return;
     }
 
-    Class ccDirectorCaller = objc_getClass("CCDirectorCaller");
+    swizzleInstance(
+        cdl,
+        @selector(setFrameInterval:),
+        (IMP)swiz_CDL_setFrameInterval,
+        (IMP*)&orig_CDL_setFrameInterval
+    );
 
-    if (ccDirectorCaller) {
-        logLine(@"[CAHighFPS] CCDirectorCaller found");
+    swizzleInstance(
+        cdl,
+        @selector(setPreferredFrameRateRange:),
+        (IMP)swiz_CDL_setPreferredFrameRateRange,
+        (IMP*)&orig_CDL_setPreferredFrameRateRange
+    );
 
-        swizzleInstance(
-            ccDirectorCaller,
-            @selector(doCaller:),
-            (IMP)swiz_CCDirectorCaller_doCaller,
-            (IMP*)&orig_CCDirectorCaller_doCaller
-        );
-    } else {
-        logLine(@"[CAHighFPS] CCDirectorCaller not found");
-    }
+    swizzleInstance(
+        cdl,
+        @selector(setPreferredFramesPerSecond:),
+        (IMP)swiz_CDL_setPreferredFramesPerSecond,
+        (IMP*)&orig_CDL_setPreferredFramesPerSecond
+    );
+
+    swizzleInstance(
+        cdl,
+        @selector(addToRunLoop:forMode:),
+        (IMP)swiz_CDL_addToRunLoop,
+        (IMP*)&orig_CDL_addToRunLoop
+    );
+
+    swizzleClass(
+        cdl,
+        @selector(displayLinkWithTarget:selector:),
+        (IMP)swiz_CDL_displayLinkWithTarget,
+        (IMP*)&orig_CDL_displayLinkWithTarget
+    );
 }
 
 __attribute__((constructor))
@@ -377,23 +183,12 @@ static void init() {
     logLine(@"[CAHighFPS] loaded");
 
     applySwizzles();
-    startHighFPSPrimer();
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        logLine(@"[CAHighFPS] reapplying swizzles after 0.5s");
         applySwizzles();
-        startHighFPSPrimer();
     });
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        logLine(@"[CAHighFPS] reapplying swizzles after 2s");
         applySwizzles();
-        startHighFPSPrimer();
-    });
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        logLine(@"[CAHighFPS] reapplying swizzles after 5s");
-        applySwizzles();
-        startHighFPSPrimer();
     });
 }
