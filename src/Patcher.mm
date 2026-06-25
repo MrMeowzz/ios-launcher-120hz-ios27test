@@ -615,8 +615,6 @@ for func in list:
 		AppLog(@"Skipping to Patch Geode because device doesn't support Pro-Motion.");
 		return completionHandler(YES, @"");
 	}
-	AppLog(@"Skipping to Patch Geode.");
-	return completionHandler(YES, @"");
 	AppLog(@"Patching Geode and mods...");
 	NSFileManager* fm = [NSFileManager defaultManager];
 	NSError* error;
@@ -1105,14 +1103,14 @@ for func in list:
 		}
 	}
 	AppLog(@"Binary has been patched! Now going to patch all mods with rendering engine...");
-	return completionHandler(YES, @"force");
 	[Patcher patchGeode:^(BOOL success2, NSString *error2) {
 		if (!success2) {
 			AppLog(@"Had an error patching with renderer but skipping anyway: %@", error2);
 		} else {
 			AppLog(@"Patched Geode & the mods with renderer.");
 		}
-		return completionHandler(YES, @"force");
+
+		completionHandler(YES, @"force");
 	}];
 	}];
 }
