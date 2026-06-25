@@ -474,16 +474,25 @@ static NSString* invokeAppMain(NSString* selectedApp, NSString* selectedContaine
 
 		NSString* caHighFPSPath = [tweakFolder stringByAppendingPathComponent:@"CAHighFPS.dylib"];
 		if ([gcUserDefaults boolForKey:@"USE_MAX_FPS"]) {
-			//loadFramework(@"ANGLEGLKit");
-			//loadFramework(@"libEGL");
-			//loadFramework(@"libGLESv2");
+			setenv("ANGLEGLKit", "1", 1);
+
+			NSString* target = [NSBundle.mainBundle.privateFrameworksPath stringByAppendingPathComponent:@"CAHighFPS.dylib"];
+
 			if (![fm fileExistsAtPath:caHighFPSPath]) {
 				AppLog(@"[invokeAppMain] Creating CAHighFPS.dylib symlink");
 				remove(caHighFPSPath.UTF8String);
-				NSString* target = [NSBundle.mainBundle.privateFrameworksPath stringByAppendingPathComponent:@"CAHighFPS.dylib"];
 				symlink(target.UTF8String, caHighFPSPath.UTF8String);
 			}
-			setenv("ANGLEGLKit", "1", 1);
+
+			dlerror();
+			void* fpsHandle = dlopen(target.UTF8String, RTLD_NOW | RTLD_GLOBAL);
+			const char* fpsError = dlerror();
+
+			if (fpsHandle) {
+				AppLog(@"[invokeAppMain] Loaded CAHighFPS.dylib directly");
+			} else {
+				AppLog(@"[invokeAppMain] Failed to load CAHighFPS.dylib: %s", fpsError ? fpsError : "unknown error");
+			}
 		}
 	} else {
 		AppLog(@"[invokeAppMain] Couldn't find tweak folder!");
