@@ -952,6 +952,24 @@ extern NSString *lcAppUrlScheme;
 			[alert addAction:cancelAction];
 			[self presentViewController:alert animated:YES completion:nil];
 		} custom:nil],
+		[Setting create:@"Delete and Redownload Geode" type:SettingTypeButton disabled:^BOOL(){
+			return ![[Utils getPrefs] boolForKey:@"JITLESS"] && ![[Utils getPrefs] boolForKey:@"FORCE_CERT_JIT"];
+		} visible:nil prefsKey:nil switchTag:0 action:^{
+			if ([VerifyInstall verifyGeodeInstalled]) {
+				NSError* err;
+				NSString* docPath = [fm URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].lastObject.path;
+				NSString* tweakPath = [NSString stringWithFormat:@"%@/Tweaks/Geode.ios.dylib", docPath];
+				[fm removeItemAtPath:tweakPath error:&err];
+				if (err) {
+					[Utils showError:self title:@"Couldn't remove Geode.ios.dylib" error:err];
+					return;
+				}
+				[[GeodeInstaller alloc] checkUpdates:_root download:YES];
+				[self dismissViewControllerAnimated:YES completion:nil];
+			} else {
+				[Utils showError:_root title:@"general.check-updates.error".loc error:nil];
+			}
+		} custom:nil],
 		// TODO LATER: add support for enterprise mode and jb
 		[Setting create:@"Download Latest Resources" type:SettingTypeButton disabled:^BOOL(){
 			return ![Utils isSandboxed] || ![Utils isDevCert];
@@ -1032,6 +1050,7 @@ extern NSString *lcAppUrlScheme;
 		[Setting create:@"advanced.dev-mode".loc.loc type:SettingTypeToggle disabled:nil visible:nil prefsKey:@"DEVELOPER_MODE" switchTag:2 action:nil custom:nil],
 		[Setting create:@"developer.completedsetup".loc.loc type:SettingTypeToggle disabled:nil visible:nil prefsKey:@"CompletedSetup" switchTag:6 action:nil custom:nil],
 		[Setting create:@"developer.webserver".loc.loc type:SettingTypeToggle disabled:nil visible:nil prefsKey:@"WEB_SERVER" switchTag:12 action:nil custom:nil],
+		[Setting create:@"Wait for Debugger".loc.loc type:SettingTypeToggle disabled:nil visible:nil prefsKey:@"WAIT_DEBUGGER" switchTag:27 action:nil custom:nil],
 		[Setting create:@"Force Patching".loc.loc type:SettingTypeToggle disabled:nil visible:nil prefsKey:@"FORCE_PATCHING" switchTag:14 action:nil custom:nil],
 		[Setting create:@"Don't patch on Safe Mode".loc.loc type:SettingTypeToggle disabled:nil visible:nil prefsKey:@"DONT_PATCH_SAFEMODE" switchTag:15 action:nil custom:nil],
 		[Setting create:@"Force Enterprise Mode".loc.loc type:SettingTypeToggle disabled:nil visible:nil prefsKey:@"FORCE_ENTERPRISE" switchTag:17 action:nil custom:nil],
@@ -1607,6 +1626,9 @@ extern NSString *lcAppUrlScheme;
 		break;
 	case 26:
 		[Utils toggleKey:@"HELPER_IPA_DOCS"];
+		break;
+	case 27:
+		[Utils toggleKey:@"WAIT_DEBUGGER"];
 		break;
 	}
 }
