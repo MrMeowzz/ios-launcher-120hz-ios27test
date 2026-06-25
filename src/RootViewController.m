@@ -215,6 +215,10 @@
 
 - (void)viewDidLoad {
 	[super viewDidLoad];
+
+	[[Utils getPrefs] setBool:NO forKey:@"GDNeedsUpdate"];
+	[[Utils getPrefs] synchronize];
+
 	[Utils increaseLaunchCount];
 
 	_icons = @[
