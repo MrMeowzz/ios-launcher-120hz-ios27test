@@ -73,7 +73,14 @@ static void swizzle(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
         fprintf(stderr, "[CAHighFPS] method not found: %s\n", sel_getName(sel));
         return;
     }
-    *oldImp = method_getImplementation(m);
+
+    IMP currentImp = method_getImplementation(m);
+
+    if (currentImp == newImp) {
+        return;
+    }
+
+    *oldImp = currentImp;
     method_setImplementation(m, newImp);
 }
 
