@@ -3,74 +3,102 @@
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
 
-// ---- CADynamicFrameRateSource ----
+// ---- original funcs ----
 
-static void (*orig_CDFRS_setPaused)(id, SEL, BOOL);
-static void swiz_CDFRS_setPaused(id self, SEL _cmd, BOOL arg1) {}
-
-static BOOL (*orig_CDFRS_isPaused)(id, SEL);
-static BOOL swiz_CDFRS_isPaused(id self, SEL _cmd) { return NO; }
+static void (*orig_CDL_setFrameInterval)(id, SEL, NSInteger);
+static void (*orig_CDL_setPreferredFrameRateRange)(id, SEL, CAFrameRateRange);
+static void (*orig_CDL_setPreferredFramesPerSecond)(id, SEL, NSInteger);
+static id   (*orig_CDL_displayLinkWithTarget)(id, SEL, id, SEL);
+static void (*orig_CDL_addToRunLoop)(id, SEL, NSRunLoop*, NSRunLoopMode);
 
 static void (*orig_CDFRS_setPreferredFrameRateRange)(id, SEL, CAFrameRateRange);
+
+// ---- helper ----
+
+static void forceDisplayLink120(id link, const char* reason) {
+    if (!link) return;
+
+    NSLog(@"[CAHighFPS] forceDisplayLink120: %s <%@>", reason, link);
+
+    if ([link respondsToSelector:@selector(setFrameInterval:)] && orig_CDL_setFrameInterval) {
+        orig_CDL_setFrameInterval(link, @selector(setFrameInterval:), 1);
+    }
+
+    if ([link respondsToSelector:@selector(setPreferredFramesPerSecond:)] && orig_CDL_setPreferredFramesPerSecond) {
+        orig_CDL_setPreferredFramesPerSecond(link, @selector(setPreferredFramesPerSecond:), 120);
+    }
+
+    if ([link respondsToSelector:@selector(setPreferredFrameRateRange:)] && orig_CDL_setPreferredFrameRateRange) {
+        CAFrameRateRange range = CAFrameRateRangeMake(120, 120, 120);
+        orig_CDL_setPreferredFrameRateRange(link, @selector(setPreferredFrameRateRange:), range);
+    }
+}
+
+// ---- CADynamicFrameRateSource ----
+
 static void swiz_CDFRS_setPreferredFrameRateRange(id self, SEL _cmd, CAFrameRateRange range) {
+    NSLog(@"[CAHighFPS] CADynamicFrameRateSource setPreferredFrameRateRange forced to 120");
+
     range.minimum = 120;
     range.preferred = 120;
     range.maximum = 120;
+
     orig_CDFRS_setPreferredFrameRateRange(self, _cmd, range);
 }
 
-static void (*orig_CDFRS_setHighFrameRateReasons)(id, SEL, const unsigned*, unsigned long long);
-static void swiz_CDFRS_setHighFrameRateReasons(id self, SEL _cmd, const unsigned* arg1, unsigned long long arg2) {}
+// ---- CADisplayLink setters ----
 
-// ---- CADisplayLink ----
-
-static void (*orig_CDL_setPaused)(id, SEL, BOOL);
-static void swiz_CDL_setPaused(id self, SEL _cmd, BOOL arg1) {}
-
-static BOOL (*orig_CDL_isPaused)(id, SEL);
-static BOOL swiz_CDL_isPaused(id self, SEL _cmd) { return NO; }
-
-static void (*orig_CDL_setFrameInterval)(id, SEL, NSInteger);
 static void swiz_CDL_setFrameInterval(id self, SEL _cmd, NSInteger interval) {
+    NSLog(@"[CAHighFPS] CADisplayLink setFrameInterval forced from %ld to 1", (long)interval);
+
     orig_CDL_setFrameInterval(self, _cmd, 1);
-    if ([self respondsToSelector:@selector(setPreferredFramesPerSecond:)])
-        ((void(*)(id,SEL,NSInteger))objc_msgSend)(self, @selector(setPreferredFramesPerSecond:), 120);
+    forceDisplayLink120(self, "setFrameInterval");
 }
 
-static void (*orig_CDL_setPreferredFrameRateRange)(id, SEL, CAFrameRateRange);
 static void swiz_CDL_setPreferredFrameRateRange(id self, SEL _cmd, CAFrameRateRange range) {
+    NSLog(@"[CAHighFPS] CADisplayLink setPreferredFrameRateRange forced to 120");
+
     range.minimum = 120;
     range.preferred = 120;
     range.maximum = 120;
+
     orig_CDL_setPreferredFrameRateRange(self, _cmd, range);
 }
 
-static void (*orig_CDL_setPreferredFramesPerSecond)(id, SEL, NSInteger);
 static void swiz_CDL_setPreferredFramesPerSecond(id self, SEL _cmd, NSInteger fps) {
+    NSLog(@"[CAHighFPS] CADisplayLink setPreferredFramesPerSecond forced from %ld to 120", (long)fps);
+
     orig_CDL_setPreferredFramesPerSecond(self, _cmd, 120);
 }
 
-static void (*orig_CDL_setHighFrameRateReasons)(id, SEL, const unsigned*, unsigned long long);
-static void swiz_CDL_setHighFrameRateReasons(id self, SEL _cmd, const unsigned* arg1, unsigned long long arg2) {}
+// ---- CADisplayLink creation / runloop ----
 
-// ---- CADisplayLink creation ----
-
-static id (*orig_CDL_displayLinkWithTarget)(id, SEL, id, SEL);
 static id swiz_CDL_displayLinkWithTarget(id self, SEL _cmd, id target, SEL selector) {
     id link = orig_CDL_displayLinkWithTarget(self, _cmd, target, selector);
-    if (link) {
-        CAFrameRateRange range = CAFrameRateRangeMake(120, 120, 120);
-        ((void(*)(id,SEL,CAFrameRateRange))objc_msgSend)(link, @selector(setPreferredFrameRateRange:), range);
-    }
+
+    NSLog(@"[CAHighFPS] CADisplayLink created target=%@ selector=%s link=%@", target, sel_getName(selector), link);
+
+    forceDisplayLink120(link, "displayLinkWithTarget");
+
     return link;
 }
 
-// ---- helpers ----
+static void swiz_CDL_addToRunLoop(id self, SEL _cmd, NSRunLoop* runLoop, NSRunLoopMode mode) {
+    NSLog(@"[CAHighFPS] CADisplayLink addToRunLoop mode=%@", mode);
 
-static void swizzle(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
+    forceDisplayLink120(self, "before addToRunLoop");
+
+    orig_CDL_addToRunLoop(self, _cmd, runLoop, mode);
+
+    forceDisplayLink120(self, "after addToRunLoop");
+}
+
+// ---- swizzle helpers ----
+
+static void swizzleInstance(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
     Method m = class_getInstanceMethod(cls, sel);
     if (!m) {
-        fprintf(stderr, "[CAHighFPS] method not found: %s\n", sel_getName(sel));
+        NSLog(@"[CAHighFPS] instance method not found: %s", sel_getName(sel));
         return;
     }
 
@@ -82,46 +110,92 @@ static void swizzle(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 
     *oldImp = currentImp;
     method_setImplementation(m, newImp);
+
+    NSLog(@"[CAHighFPS] swizzled instance method: %s", sel_getName(sel));
+}
+
+static void swizzleClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
+    Class meta = object_getClass(cls);
+    Method m = class_getClassMethod(cls, sel);
+
+    if (!m) {
+        NSLog(@"[CAHighFPS] class method not found: %s", sel_getName(sel));
+        return;
+    }
+
+    IMP currentImp = method_getImplementation(m);
+
+    if (currentImp == newImp) {
+        return;
+    }
+
+    *oldImp = currentImp;
+    method_setImplementation(m, newImp);
+
+    NSLog(@"[CAHighFPS] swizzled class method: %s on %@", sel_getName(sel), meta);
 }
 
 static void applySwizzles(void) {
     Class cdfrs = objc_getClass("CADynamicFrameRateSource");
     if (cdfrs) {
-        swizzle(cdfrs, @selector(setPaused:),                     (IMP)swiz_CDFRS_setPaused,                  (IMP*)&orig_CDFRS_setPaused);
-        swizzle(cdfrs, @selector(isPaused),                       (IMP)swiz_CDFRS_isPaused,                   (IMP*)&orig_CDFRS_isPaused);
-        swizzle(cdfrs, @selector(setPreferredFrameRateRange:),    (IMP)swiz_CDFRS_setPreferredFrameRateRange, (IMP*)&orig_CDFRS_setPreferredFrameRateRange);
-        swizzle(cdfrs, @selector(setHighFrameRateReasons:count:), (IMP)swiz_CDFRS_setHighFrameRateReasons,    (IMP*)&orig_CDFRS_setHighFrameRateReasons);
+        swizzleInstance(cdfrs,
+            @selector(setPreferredFrameRateRange:),
+            (IMP)swiz_CDFRS_setPreferredFrameRateRange,
+            (IMP*)&orig_CDFRS_setPreferredFrameRateRange
+        );
     } else {
-        fprintf(stderr, "[CAHighFPS] CADynamicFrameRateSource not found\n");
+        NSLog(@"[CAHighFPS] CADynamicFrameRateSource not found");
     }
 
     Class cdl = objc_getClass("CADisplayLink");
     if (cdl) {
-        swizzle(cdl, @selector(setPaused:),                       (IMP)swiz_CDL_setPaused,                    (IMP*)&orig_CDL_setPaused);
-        swizzle(cdl, @selector(isPaused),                         (IMP)swiz_CDL_isPaused,                     (IMP*)&orig_CDL_isPaused);
-        swizzle(cdl, @selector(setFrameInterval:),                (IMP)swiz_CDL_setFrameInterval,             (IMP*)&orig_CDL_setFrameInterval);
-        swizzle(cdl, @selector(setPreferredFrameRateRange:),      (IMP)swiz_CDL_setPreferredFrameRateRange,   (IMP*)&orig_CDL_setPreferredFrameRateRange);
-        swizzle(cdl, @selector(setPreferredFramesPerSecond:),     (IMP)swiz_CDL_setPreferredFramesPerSecond,  (IMP*)&orig_CDL_setPreferredFramesPerSecond);
-        swizzle(cdl, @selector(setHighFrameRateReasons:count:),   (IMP)swiz_CDL_setHighFrameRateReasons,      (IMP*)&orig_CDL_setHighFrameRateReasons);
+        swizzleInstance(cdl,
+            @selector(setFrameInterval:),
+            (IMP)swiz_CDL_setFrameInterval,
+            (IMP*)&orig_CDL_setFrameInterval
+        );
 
-        Class cdlMeta = object_getClass(cdl);
-        swizzle(cdlMeta, @selector(displayLinkWithTarget:selector:), (IMP)swiz_CDL_displayLinkWithTarget, (IMP*)&orig_CDL_displayLinkWithTarget);
+        swizzleInstance(cdl,
+            @selector(setPreferredFrameRateRange:),
+            (IMP)swiz_CDL_setPreferredFrameRateRange,
+            (IMP*)&orig_CDL_setPreferredFrameRateRange
+        );
+
+        swizzleInstance(cdl,
+            @selector(setPreferredFramesPerSecond:),
+            (IMP)swiz_CDL_setPreferredFramesPerSecond,
+            (IMP*)&orig_CDL_setPreferredFramesPerSecond
+        );
+
+        swizzleInstance(cdl,
+            @selector(addToRunLoop:forMode:),
+            (IMP)swiz_CDL_addToRunLoop,
+            (IMP*)&orig_CDL_addToRunLoop
+        );
+
+        swizzleClass(cdl,
+            @selector(displayLinkWithTarget:selector:),
+            (IMP)swiz_CDL_displayLinkWithTarget,
+            (IMP*)&orig_CDL_displayLinkWithTarget
+        );
     } else {
-        fprintf(stderr, "[CAHighFPS] CADisplayLink not found\n");
+        NSLog(@"[CAHighFPS] CADisplayLink not found");
     }
 }
 
 __attribute__((constructor))
 static void init() {
-    fprintf(stderr, "[CAHighFPS] loaded\n");
+    NSLog(@"[CAHighFPS] loaded");
 
     applySwizzles();
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        NSLog(@"[CAHighFPS] reapplying swizzles after 2s");
         applySwizzles();
     });
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        NSLog(@"[CAHighFPS] reapplying swizzles after 5s");
         applySwizzles();
     });
 }
