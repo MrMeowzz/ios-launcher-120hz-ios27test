@@ -475,21 +475,41 @@ static NSString* invokeAppMain(NSString* selectedApp, NSString* selectedContaine
 		NSString* caHighFPSPath = [tweakFolder stringByAppendingPathComponent:@"CAHighFPS.dylib"];
 		if ([gcUserDefaults boolForKey:@"USE_MAX_FPS"]) {
 			setenv("ANGLEGLKit", "1", 1);
-
+		
 			NSString* target = [NSBundle.mainBundle.privateFrameworksPath stringByAppendingPathComponent:@"CAHighFPS.dylib"];
-
-			if (![fm fileExistsAtPath:caHighFPSPath]) {
-				AppLog(@"[invokeAppMain] Creating CAHighFPS.dylib symlink");
-				remove(caHighFPSPath.UTF8String);
-				symlink(target.UTF8String, caHighFPSPath.UTF8String);
+		
+			AppLog(@"[invokeAppMain] CAHighFPS target: %@", target);
+			AppLog(@"[invokeAppMain] CAHighFPS tweak path: %@", caHighFPSPath);
+		
+			// Always refresh this symlink so it never points to an old/missing dylib.
+			remove(caHighFPSPath.UTF8String);
+		
+			if ([fm fileExistsAtPath:target]) {
+				int symlinkResult = symlink(target.UTF8String, caHighFPSPath.UTF8String);
+				AppLog(@"[invokeAppMain] Refreshed CAHighFPS.dylib symlink result: %d", symlinkResult);
+			} else {
+				AppLog(@"[invokeAppMain] CAHighFPS.dylib target does not exist!");
 			}
-
+		
 			dlerror();
 			void* fpsHandle = dlopen(target.UTF8String, RTLD_NOW | RTLD_GLOBAL);
 			const char* fpsError = dlerror();
-
+		
 			if (fpsHandle) {
 				AppLog(@"[invokeAppMain] Loaded CAHighFPS.dylib directly");
+		
+				typedef void (*CAHighFPSTestLogFunc)(void);
+		
+				dlerror();
+				CAHighFPSTestLogFunc testLog = (CAHighFPSTestLogFunc)dlsym(fpsHandle, "CAHighFPS_TestLog");
+				const char* symError = dlerror();
+		
+				if (testLog) {
+					AppLog(@"[invokeAppMain] Calling CAHighFPS_TestLog...");
+					testLog();
+				} else {
+					AppLog(@"[invokeAppMain] CAHighFPS_TestLog not found: %s", symError ? symError : "unknown error");
+				}
 			} else {
 				AppLog(@"[invokeAppMain] Failed to load CAHighFPS.dylib: %s", fpsError ? fpsError : "unknown error");
 			}
