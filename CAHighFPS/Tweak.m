@@ -13,6 +13,7 @@ static void logLine(NSString* line) {
 }
 
 static void forceDisplayLink120(id link, const char* reason);
+static void forceDisplayLink120Silent(id link);
 
 // ---- original funcs ----
 
@@ -24,9 +25,12 @@ static void (*orig_CDL_addToRunLoop)(id, SEL, NSRunLoop*, NSRunLoopMode);
 
 static void (*orig_CDFRS_setPreferredFrameRateRange)(id, SEL, CAFrameRateRange);
 
-static void (*orig_CCDirector_setAnimationInterval)(id, SEL, double);
-static double (*orig_CCDirector_getAnimationInterval)(id, SEL);
-static double (*orig_CCDirector_animationInterval)(id, SEL);
+static void (*orig_CCDirectorCaller_doCaller)(id, SEL, id);
+
+// ---- tick counter ----
+
+static CFTimeInterval lastCallerLogTime = 0;
+static int callerTickCount = 0;
 
 // ---- exported test ----
 
@@ -37,10 +41,8 @@ void CAHighFPS_TestLog(void) {
 
 // ---- helpers ----
 
-static void forceDisplayLink120(id link, const char* reason) {
+static void forceDisplayLink120Silent(id link) {
     if (!link) return;
-
-    logLine([NSString stringWithFormat:@"[CAHighFPS] forceDisplayLink120: %s %@", reason, link]);
 
     if ([link respondsToSelector:@selector(setFrameInterval:)] && orig_CDL_setFrameInterval) {
         orig_CDL_setFrameInterval(link, @selector(setFrameInterval:), 1);
@@ -56,6 +58,13 @@ static void forceDisplayLink120(id link, const char* reason) {
     }
 }
 
+static void forceDisplayLink120(id link, const char* reason) {
+    if (!link) return;
+
+    logLine([NSString stringWithFormat:@"[CAHighFPS] forceDisplayLink120: %s %@", reason, link]);
+    forceDisplayLink120Silent(link);
+}
+
 // ---- CADynamicFrameRateSource ----
 
 static void swiz_CDFRS_setPreferredFrameRateRange(id self, SEL _cmd, CAFrameRateRange range) {
@@ -65,29 +74,36 @@ static void swiz_CDFRS_setPreferredFrameRateRange(id self, SEL _cmd, CAFrameRate
     range.preferred = TARGET_FPS;
     range.maximum = TARGET_FPS;
 
-    orig_CDFRS_setPreferredFrameRateRange(self, _cmd, range);
-}
-
-// ---- Cocos2d / GD frame interval ----
-
-static void swiz_CCDirector_setAnimationInterval(id self, SEL _cmd, double interval) {
-    double forced = 1.0 / TARGET_FPS;
-
-    logLine([NSString stringWithFormat:@"[CAHighFPS] CCDirector setAnimationInterval forced from %f to %f", interval, forced]);
-
-    if (orig_CCDirector_setAnimationInterval) {
-        orig_CCDirector_setAnimationInterval(self, _cmd, forced);
+    if (orig_CDFRS_setPreferredFrameRateRange) {
+        orig_CDFRS_setPreferredFrameRateRange(self, _cmd, range);
     }
 }
 
-static double swiz_CCDirector_getAnimationInterval(id self, SEL _cmd) {
-    logLine(@"[CAHighFPS] CCDirector getAnimationInterval forced to 1/120");
-    return 1.0 / TARGET_FPS;
-}
+// ---- CCDirectorCaller ----
+// This is the real Cocos object your log showed:
+// target=<CCDirectorCaller ...> selector=doCaller:
 
-static double swiz_CCDirector_animationInterval(id self, SEL _cmd) {
-    logLine(@"[CAHighFPS] CCDirector animationInterval forced to 1/120");
-    return 1.0 / TARGET_FPS;
+static void swiz_CCDirectorCaller_doCaller(id self, SEL _cmd, id sender) {
+    callerTickCount++;
+
+    CFTimeInterval now = CACurrentMediaTime();
+
+    if (lastCallerLogTime == 0) {
+        lastCallerLogTime = now;
+    }
+
+    if (now - lastCallerLogTime >= 1.0) {
+        logLine([NSString stringWithFormat:@"[CAHighFPS] CCDirectorCaller doCaller ticks/sec = %d", callerTickCount]);
+        callerTickCount = 0;
+        lastCallerLogTime = now;
+    }
+
+    // sender should be the CADisplayLink. Keep it forced, but do not spam logs every frame.
+    forceDisplayLink120Silent(sender);
+
+    if (orig_CCDirectorCaller_doCaller) {
+        orig_CCDirectorCaller_doCaller(self, _cmd, sender);
+    }
 }
 
 // ---- CADisplayLink setters ----
@@ -95,7 +111,10 @@ static double swiz_CCDirector_animationInterval(id self, SEL _cmd) {
 static void swiz_CDL_setFrameInterval(id self, SEL _cmd, NSInteger interval) {
     logLine([NSString stringWithFormat:@"[CAHighFPS] CADisplayLink setFrameInterval forced from %ld to 1", (long)interval]);
 
-    orig_CDL_setFrameInterval(self, _cmd, 1);
+    if (orig_CDL_setFrameInterval) {
+        orig_CDL_setFrameInterval(self, _cmd, 1);
+    }
+
     forceDisplayLink120(self, "setFrameInterval");
 }
 
@@ -106,19 +125,27 @@ static void swiz_CDL_setPreferredFrameRateRange(id self, SEL _cmd, CAFrameRateRa
     range.preferred = TARGET_FPS;
     range.maximum = TARGET_FPS;
 
-    orig_CDL_setPreferredFrameRateRange(self, _cmd, range);
+    if (orig_CDL_setPreferredFrameRateRange) {
+        orig_CDL_setPreferredFrameRateRange(self, _cmd, range);
+    }
 }
 
 static void swiz_CDL_setPreferredFramesPerSecond(id self, SEL _cmd, NSInteger fps) {
     logLine([NSString stringWithFormat:@"[CAHighFPS] CADisplayLink setPreferredFramesPerSecond forced from %ld to 120", (long)fps]);
 
-    orig_CDL_setPreferredFramesPerSecond(self, _cmd, TARGET_FPS);
+    if (orig_CDL_setPreferredFramesPerSecond) {
+        orig_CDL_setPreferredFramesPerSecond(self, _cmd, TARGET_FPS);
+    }
 }
 
 // ---- CADisplayLink creation / runloop ----
 
 static id swiz_CDL_displayLinkWithTarget(id self, SEL _cmd, id target, SEL selector) {
-    id link = orig_CDL_displayLinkWithTarget(self, _cmd, target, selector);
+    id link = nil;
+
+    if (orig_CDL_displayLinkWithTarget) {
+        link = orig_CDL_displayLinkWithTarget(self, _cmd, target, selector);
+    }
 
     logLine([NSString stringWithFormat:@"[CAHighFPS] CADisplayLink created target=%@ selector=%s link=%@", target, sel_getName(selector), link]);
 
@@ -132,7 +159,9 @@ static void swiz_CDL_addToRunLoop(id self, SEL _cmd, NSRunLoop* runLoop, NSRunLo
 
     forceDisplayLink120(self, "before addToRunLoop");
 
-    orig_CDL_addToRunLoop(self, _cmd, runLoop, mode);
+    if (orig_CDL_addToRunLoop) {
+        orig_CDL_addToRunLoop(self, _cmd, runLoop, mode);
+    }
 
     forceDisplayLink120(self, "after addToRunLoop");
 }
@@ -235,33 +264,19 @@ static void applySwizzles(void) {
         logLine(@"[CAHighFPS] CADisplayLink not found");
     }
 
-    Class ccDirector = objc_getClass("CCDirector");
+    Class ccDirectorCaller = objc_getClass("CCDirectorCaller");
 
-    if (ccDirector) {
-        logLine(@"[CAHighFPS] CCDirector found");
-
-        swizzleInstance(
-            ccDirector,
-            @selector(setAnimationInterval:),
-            (IMP)swiz_CCDirector_setAnimationInterval,
-            (IMP*)&orig_CCDirector_setAnimationInterval
-        );
+    if (ccDirectorCaller) {
+        logLine(@"[CAHighFPS] CCDirectorCaller found");
 
         swizzleInstance(
-            ccDirector,
-            @selector(getAnimationInterval),
-            (IMP)swiz_CCDirector_getAnimationInterval,
-            (IMP*)&orig_CCDirector_getAnimationInterval
-        );
-
-        swizzleInstance(
-            ccDirector,
-            @selector(animationInterval),
-            (IMP)swiz_CCDirector_animationInterval,
-            (IMP*)&orig_CCDirector_animationInterval
+            ccDirectorCaller,
+            @selector(doCaller:),
+            (IMP)swiz_CCDirectorCaller_doCaller,
+            (IMP*)&orig_CCDirectorCaller_doCaller
         );
     } else {
-        logLine(@"[CAHighFPS] CCDirector not found");
+        logLine(@"[CAHighFPS] CCDirectorCaller not found");
     }
 }
 

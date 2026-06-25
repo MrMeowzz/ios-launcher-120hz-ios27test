@@ -1562,6 +1562,23 @@ extern NSString *lcAppUrlScheme;
 							AppLog(@"Copied CAHighFPS.dylib");
 						}
 					}
+					
+					NSString* infoPath = [bundlePath URLByAppendingPathComponent:@"Info.plist"].path;
+					NSMutableDictionary* infoDict = [NSMutableDictionary dictionaryWithContentsOfFile:infoPath];
+
+					if (infoDict) {
+						infoDict[@"CADisableMinimumFrameDuration"] = @YES;
+						infoDict[@"CADisableMinimumFrameDurationOnPhone"] = @YES;
+
+						if ([infoDict writeToFile:infoPath atomically:YES]) {
+							AppLog(@"Added ProMotion Info.plist keys to installed GD bundle.");
+						} else {
+							AppLog(@"Failed to write ProMotion Info.plist keys to installed GD bundle.");
+						}
+					} else {
+						AppLog(@"Failed to read installed GD Info.plist for ProMotion patch.");
+					}
+
 					AppLog(@"Patching GD with new load commands...");
 					NSString* execPath = [bundlePath URLByAppendingPathComponent:@"GeometryJump"].path;
 					NSString* error = LCParseMachO(execPath.UTF8String, false, ^(const char* path, struct mach_header_64* header, int fd, void* filePtr) {
