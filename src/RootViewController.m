@@ -732,7 +732,37 @@
 	if (![[Utils getPrefs] boolForKey:@"JITLESS"] && ![[Utils getPrefs] boolForKey:@"FORCE_PATCHING"] && ![[Utils getPrefs] integerForKey:@"FORCE_CERT_JIT"]) {
 		return [Patcher patchGeode:^(BOOL success, NSString *error) {
 			AppLog(@"Patched Geode (Success: %@, Error: %@)", (success) ? @"YES" : @"NO", error);
-			return completionHandler(YES, nil);
+
+			if (!success) {
+				return completionHandler(NO, error ?: @"Failed to patch Geode.");
+			}
+
+			AppLog(@"Signing tweaks after patchGeode...");
+
+			if (![LCUtils certificateData]) {
+				return completionHandler(NO, @"No certificate found. Please refresh/import your SideStore certificate in settings.");
+			}
+
+			[LCUtils validateCertificate:^(int status, NSDate* expirationDate, NSString* errorC) {
+				if (errorC) {
+					return completionHandler(NO, [NSString stringWithFormat:@"launcher.error.sign.invalidcert".loc, errorC]);
+				}
+
+				if (status != 0) {
+					return completionHandler(NO, @"launcher.error.sign.invalidcert2".loc);
+				}
+
+				[LCUtils signTweaks:[LCPath tweakPath] force:YES progressHandler:^(NSProgress* progress) {
+				} completion:^(NSError* signError) {
+					if (signError != nil) {
+						AppLog(@"Detailed error for signing tweaks after patchGeode: %@", signError);
+						return completionHandler(NO, @"Couldn't sign tweaks after patching Geode. Please refresh/import your certificate in settings.");
+					}
+
+					AppLog(@"Signed tweaks after patchGeode.");
+					completionHandler(YES, nil);
+				}];
+			}];
 		}];
 	}
 	NSURL* bundlePath = [[LCPath bundlePath] URLByAppendingPathComponent:[Utils gdBundleName]];
