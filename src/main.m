@@ -472,6 +472,13 @@ static NSString* invokeAppMain(NSString* selectedApp, NSString* selectedContaine
 			}
 		}
 
+		AppLog(@"[invokeAppMain] main bundle path: %@", [NSBundle mainBundle].bundlePath);
+		AppLog(@"[invokeAppMain] main bundle id: %@", [NSBundle mainBundle].bundleIdentifier);
+		AppLog(@"[invokeAppMain] CADisableMinimumFrameDuration: %@", [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CADisableMinimumFrameDuration"]);
+		AppLog(@"[invokeAppMain] CADisableMinimumFrameDurationOnPhone: %@", [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CADisableMinimumFrameDurationOnPhone"]);
+		AppLog(@"[invokeAppMain] screen maximumFramesPerSecond: %ld", (long)[UIScreen mainScreen].maximumFramesPerSecond);
+		AppLog(@"[invokeAppMain] Low Power Mode: %@", [[NSProcessInfo processInfo] isLowPowerModeEnabled] ? @"YES" : @"NO");
+
 		NSString* caHighFPSPath = [tweakFolder stringByAppendingPathComponent:@"CAHighFPS.dylib"];
 		if ([gcUserDefaults boolForKey:@"USE_MAX_FPS"]) {
 			setenv("ANGLEGLKit", "1", 1);
