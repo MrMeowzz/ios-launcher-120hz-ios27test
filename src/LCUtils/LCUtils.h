@@ -12,6 +12,7 @@ extern "C" {
 NSString* LCParseMachO(const char* path, bool readOnly, LCParseMachOCallback callback);
 int LCPatchExecSlice(const char* path, struct mach_header_64* header, bool withGeode, bool withANGLE);
 BOOL LCPatchLibWithANGLE(const char* path, struct mach_header_64* header, bool withANGLE);
+BOOL LCPatchANGLEFrameworkSlice(const char* path, struct mach_header_64* header);
 #ifdef __cplusplus
 }
 #endif

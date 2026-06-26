@@ -364,6 +364,32 @@ void* new_dlsym(void* __handle, const char* __symbol) {
 // 	}
 // }
 
+
+static void preloadANGLEFrameworksFromBundle(NSString* bundlePath) {
+	NSString* frameworksPath = [bundlePath stringByAppendingPathComponent:@"Frameworks"];
+	NSArray<NSString*>* libs = @[
+		[frameworksPath stringByAppendingPathComponent:@"libGLESv2.framework/libGLESv2"],
+		[frameworksPath stringByAppendingPathComponent:@"libEGL.framework/libEGL"],
+		[frameworksPath stringByAppendingPathComponent:@"ANGLEGLKit.framework/ANGLEGLKit"],
+	];
+
+	for (NSString* lib in libs) {
+		dlerror();
+		void* handle = dlopen(lib.UTF8String, RTLD_NOW | RTLD_GLOBAL);
+		const char* err = dlerror();
+		if (handle) {
+			AppLog(@"[invokeAppMain] Preloaded ANGLE framework: %@", lib.lastPathComponent);
+		} else {
+			AppLog(@"[invokeAppMain] Failed to preload ANGLE framework %@: %s", lib, err ? err : "unknown error");
+		}
+	}
+
+	dlerror();
+	void* eglGetDisplayPtr = dlsym(RTLD_DEFAULT, "eglGetDisplay");
+	const char* eglErr = dlerror();
+	AppLog(@"[invokeAppMain] eglGetDisplay after preload: %p%s%s", eglGetDisplayPtr, eglErr ? " error=" : "", eglErr ? eglErr : "");
+}
+
 static NSString* invokeAppMain(NSString* selectedApp, NSString* selectedContainer, BOOL safeMode, int argc, char* argv[]) {
 	NSString* appError = nil;
 	if (![gcUserDefaults boolForKey:@"JITLESS"]) {
@@ -482,6 +508,7 @@ static NSString* invokeAppMain(NSString* selectedApp, NSString* selectedContaine
 		NSString* caHighFPSPath = [tweakFolder stringByAppendingPathComponent:@"CAHighFPS.dylib"];
 		if ([gcUserDefaults boolForKey:@"USE_MAX_FPS"]) {
 			setenv("ANGLEGLKit", "1", 1);
+			preloadANGLEFrameworksFromBundle(bundlePath);
 		
 			NSString* target = [NSBundle.mainBundle.privateFrameworksPath stringByAppendingPathComponent:@"CAHighFPS.dylib"];
 		

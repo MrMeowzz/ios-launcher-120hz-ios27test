@@ -86,6 +86,18 @@ extern NSString *lcAppUrlScheme;
 		AppLog(@"Copied %@ into Geometry Dash Frameworks.", framework);
 	}
 
+	NSString* angleBinary = [frameworksPath stringByAppendingPathComponent:@"ANGLEGLKit.framework/ANGLEGLKit"];
+	NSString* anglePatchError = LCParseMachO(angleBinary.UTF8String, false, ^(const char* path, struct mach_header_64* header, int fd, void* filePtr) {
+		LCPatchANGLEFrameworkSlice(path, header);
+	});
+	if (anglePatchError) {
+		if (error) {
+			*error = [NSError errorWithDomain:@"ANGLEPatch" code:3 userInfo:@{ NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to patch ANGLEGLKit dependencies: %@", anglePatchError] }];
+		}
+		return NO;
+	}
+	AppLog(@"Patched ANGLEGLKit.framework to load sibling libEGL/libGLESv2 with @loader_path.");
+
 	return YES;
 }
 
@@ -100,31 +112,6 @@ extern NSString *lcAppUrlScheme;
 			AppLog(@"Removed %@ from Geometry Dash Frameworks.", framework);
 		}
 	}
-}
-
-
-- (BOOL)isRunningInsideLiveContainerForANGLE {
-	NSString* bundleID = NSBundle.mainBundle.bundleIdentifier.lowercaseString ?: @"";
-	NSString* bundlePath = NSBundle.mainBundle.bundlePath.lowercaseString ?: @"";
-	return [bundleID containsString:@"livecontainer"] || [bundlePath containsString:@"/documents/applications/"];
-}
-
-- (BOOL)isIOS27OrNewerForANGLE {
-	NSOperatingSystemVersion version = NSProcessInfo.processInfo.operatingSystemVersion;
-	return version.majorVersion >= 27;
-}
-
-- (BOOL)shouldPatchANGLEGLKitFor120Hz {
-	if ([[Utils getPrefs] boolForKey:@"FORCE_ANGLE"]) {
-		return YES;
-	}
-
-	if ([self isRunningInsideLiveContainerForANGLE] && [self isIOS27OrNewerForANGLE]) {
-		AppLog(@"ANGLEGLKit binary patch disabled because LiveContainer on iOS 27 is crashing inside ANGLEGLKit. Enable Force ANGLEGLKit only if you want to test the unstable path.");
-		return NO;
-	}
-
-	return YES;
 }
 
 - (void)viewDidLoad {
@@ -1035,7 +1022,6 @@ extern NSString *lcAppUrlScheme;
 			if ([VerifyInstall verifyGeodeInstalled]) {
 				if ([[Utils getPrefs] boolForKey:@"USE_MAX_FPS"]) {
 					[[Utils getPrefs] setBool:NO forKey:@"USE_MAX_FPS"];
-					[[Utils getPrefs] setBool:NO forKey:@"USE_ANGLEGLKIT"];
 					[[Utils getPrefs] synchronize];
 					AppLog(@"Disabled 120Hz before deleting/redownloading Geode. Re-enable 120Hz after Geode installs.");
 				}
@@ -1594,7 +1580,7 @@ extern NSString *lcAppUrlScheme;
 				return;
 			}
 
-			UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Warning" message:@"Enabling this option is experimental. On stable setups it can patch ANGLEGLKit for 120Hz rendering. On LiveContainer with iOS 27, ANGLEGLKit currently crashes during startup, so the launcher will automatically use the safer CAHighFPS/ProMotion path unless the Force ANGLEGLKit developer setting is enabled.\n\nWould you like to enable anyways? You can always disable it later.".loc preferredStyle:UIAlertControllerStyleAlert];
+			UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Warning" message:@"Enabling this option is experimental, as it changes the rendering engine Geometry Dash, Geode, and installed mods use to support the maximum refresh rate. Some mods may have graphical issues with ANGLEGLKit. Only enable this if you are okay with possible rendering differences.\n\nWould you like to enable anyways? You can always disable it later.".loc preferredStyle:UIAlertControllerStyleAlert];
 			UIAlertAction* okAction = [UIAlertAction actionWithTitle:@"Enable" style:UIAlertActionStyleDestructive handler:^(UIAlertAction* _Nonnull action) {
 				[Utils copyOrigBinary:^(BOOL isSuccess, NSString *errorStr) {
 					if (!isSuccess) {
@@ -1605,19 +1591,11 @@ extern NSString *lcAppUrlScheme;
 
 					NSFileManager* fm = [NSFileManager defaultManager];
 					NSURL* bundlePath = [[LCPath bundlePath] URLByAppendingPathComponent:[Utils gdBundleName]];
-					BOOL useANGLEGLKitPatch = [self shouldPatchANGLEGLKitFor120Hz];
-					[[Utils getPrefs] setBool:useANGLEGLKitPatch forKey:@"USE_ANGLEGLKIT"];
-
-					if (useANGLEGLKitPatch) {
-						NSError* frameworkError = nil;
-						if (![self copyANGLEFrameworksIntoBundle:bundlePath error:&frameworkError]) {
-							[Utils showError:self title:[NSString stringWithFormat:@"Failed to copy ANGLEGLKit frameworks: %@", frameworkError.localizedDescription ?: @"Unknown error"] error:nil];
-							[self.tableView reloadData];
-							return;
-						}
-					} else {
-						[self removeANGLEFrameworksFromBundle:bundlePath];
-						AppLog(@"Using safe 120Hz mode: CAHighFPS/ProMotion only. Geometry Dash, Geode, and mods will stay on OpenGLES.");
+					NSError* frameworkError = nil;
+					if (![self copyANGLEFrameworksIntoBundle:bundlePath error:&frameworkError]) {
+						[Utils showError:self title:[NSString stringWithFormat:@"Failed to copy ANGLEGLKit frameworks: %@", frameworkError.localizedDescription ?: @"Unknown error"] error:nil];
+						[self.tableView reloadData];
+						return;
 					}
 
 					if ([[Utils getPrefs] boolForKey:@"ENTERPRISE_MODE"]) {
@@ -1649,10 +1627,10 @@ extern NSString *lcAppUrlScheme;
 						AppLog(@"Failed to read installed GD Info.plist for ProMotion patch.");
 					}
 
-					AppLog(@"Patching Geometry Dash executable. ANGLEGLKit enabled? %@", useANGLEGLKitPatch ? @"YES" : @"NO");
+					AppLog(@"Patching Geometry Dash executable with ANGLEGLKit load command...");
 					NSString* execPath = [bundlePath URLByAppendingPathComponent:@"GeometryJump"].path;
 					NSString* parseError = LCParseMachO(execPath.UTF8String, false, ^(const char* path, struct mach_header_64* header, int fd, void* filePtr) {
-						LCPatchExecSlice(path, header, [[Utils getPrefs] boolForKey:@"ENTERPRISE_MODE"], useANGLEGLKitPatch);
+						LCPatchExecSlice(path, header, [[Utils getPrefs] boolForKey:@"ENTERPRISE_MODE"], true);
 					});
 					if (parseError) {
 						[Utils showError:self title:[NSString stringWithFormat:@"Failed to patch Geometry Dash: %@", parseError] error:nil];
@@ -1665,13 +1643,13 @@ extern NSString *lcAppUrlScheme;
 					NSString* patchChecksum = [Patcher getPatchChecksum:[bundlePath URLByAppendingPathComponent:@"GeometryOriginal"] withSafeMode:NO];
 					if (patchChecksum.length > 0) {
 						[[Utils getPrefs] setObject:patchChecksum forKey:@"PATCH_CHECKSUM"];
-						AppLog(@"Stored 120Hz patch checksum: %@", patchChecksum);
+						AppLog(@"Stored ANGLE patch checksum: %@", patchChecksum);
 					} else {
 						AppLog(@"Could not compute ANGLE patch checksum; launcher may still show patch diff.");
 					}
 
 					[Patcher patchGeode:^(BOOL success, NSString *error) {
-						AppLog(@"Patched Geode/mods rendering backend (ANGLE enabled? %@, Success: %@, Error: %@)", useANGLEGLKitPatch ? @"YES" : @"NO", success ? @"YES" : @"NO", error);
+						AppLog(@"Patched Geode/mods for ANGLEGLKit (Success: %@, Error: %@)", success ? @"YES" : @"NO", error);
 						if (!success) {
 							[Utils showError:self title:[NSString stringWithFormat:@"Failed to patch Geode/mods: %@", error ?: @"Unknown error"] error:nil];
 						}
@@ -1687,7 +1665,6 @@ extern NSString *lcAppUrlScheme;
 			[self presentViewController:alert animated:YES completion:nil];
 		} else {
 			[[Utils getPrefs] setBool:NO forKey:@"USE_MAX_FPS"];
-			[[Utils getPrefs] setBool:NO forKey:@"USE_ANGLEGLKIT"];
 			NSFileManager* fm = [NSFileManager defaultManager];
 			NSURL* bundlePath = [[LCPath bundlePath] URLByAppendingPathComponent:[Utils gdBundleName]];
 
