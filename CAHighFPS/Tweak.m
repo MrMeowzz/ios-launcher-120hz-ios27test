@@ -12,7 +12,12 @@ static void logLine(NSString* line) {
     fprintf(stderr, "%s\n", line.UTF8String);
 }
 
+static NSTimeInterval targetAnimationInterval(void) {
+    return 1.0 / (double)TARGET_FPS;
+}
+
 static void forceDisplayLink120(id link);
+static void applyGameFPSBypass(void);
 
 // ---- original funcs ----
 
@@ -21,6 +26,9 @@ static void (*orig_CDL_setPreferredFrameRateRange)(id, SEL, CAFrameRateRange);
 static void (*orig_CDL_setPreferredFramesPerSecond)(id, SEL, NSInteger);
 static id   (*orig_CDL_displayLinkWithTarget)(id, SEL, id, SEL);
 static void (*orig_CDL_addToRunLoop)(id, SEL, NSRunLoop*, NSRunLoopMode);
+
+static void (*orig_CCDirector_setAnimationInterval)(id, SEL, NSTimeInterval);
+static NSTimeInterval (*orig_CCDirector_animationInterval)(id, SEL);
 
 // ---- exported test ----
 
@@ -98,6 +106,76 @@ static void swiz_CDL_addToRunLoop(id self, SEL _cmd, NSRunLoop* runLoop, NSRunLo
     forceDisplayLink120(self);
 }
 
+// ---- CCDirector game-side FPS bypass ----
+
+static void forceDirectorAnimationInterval(void) {
+    Class directorClass = objc_getClass("CCDirector");
+
+    if (!directorClass) {
+        return;
+    }
+
+    id director = nil;
+
+    if ([directorClass respondsToSelector:@selector(sharedDirector)]) {
+        director = ((id (*)(id, SEL))objc_msgSend)(directorClass, @selector(sharedDirector));
+    }
+
+    if (!director) {
+        return;
+    }
+
+    if ([director respondsToSelector:@selector(setAnimationInterval:)]) {
+        ((void (*)(id, SEL, NSTimeInterval))objc_msgSend)(
+            director,
+            @selector(setAnimationInterval:),
+            targetAnimationInterval()
+        );
+    }
+}
+
+static void swiz_CCDirector_setAnimationInterval(id self, SEL _cmd, NSTimeInterval interval) {
+    if (orig_CCDirector_setAnimationInterval) {
+        orig_CCDirector_setAnimationInterval(self, _cmd, targetAnimationInterval());
+    }
+}
+
+static NSTimeInterval swiz_CCDirector_animationInterval(id self, SEL _cmd) {
+    return targetAnimationInterval();
+}
+
+static void applyGameFPSBypass(void) {
+    Class directorClass = objc_getClass("CCDirector");
+
+    if (!directorClass) {
+        return;
+    }
+
+    Method setIntervalMethod = class_getInstanceMethod(directorClass, @selector(setAnimationInterval:));
+
+    if (setIntervalMethod) {
+        IMP currentImp = method_getImplementation(setIntervalMethod);
+
+        if (currentImp != (IMP)swiz_CCDirector_setAnimationInterval) {
+            orig_CCDirector_setAnimationInterval = (void (*)(id, SEL, NSTimeInterval))currentImp;
+            method_setImplementation(setIntervalMethod, (IMP)swiz_CCDirector_setAnimationInterval);
+        }
+    }
+
+    Method getIntervalMethod = class_getInstanceMethod(directorClass, @selector(animationInterval));
+
+    if (getIntervalMethod) {
+        IMP currentImp = method_getImplementation(getIntervalMethod);
+
+        if (currentImp != (IMP)swiz_CCDirector_animationInterval) {
+            orig_CCDirector_animationInterval = (NSTimeInterval (*)(id, SEL))currentImp;
+            method_setImplementation(getIntervalMethod, (IMP)swiz_CCDirector_animationInterval);
+        }
+    }
+
+    forceDirectorAnimationInterval();
+}
+
 // ---- swizzle helpers ----
 
 static void swizzleInstance(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
@@ -137,58 +215,62 @@ static void swizzleClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
 static void applySwizzles(void) {
     Class cdl = objc_getClass("CADisplayLink");
 
-    if (!cdl) {
-        logLine(@"[CAHighFPS] CADisplayLink not found");
-        return;
+    if (cdl) {
+        swizzleInstance(
+            cdl,
+            @selector(setFrameInterval:),
+            (IMP)swiz_CDL_setFrameInterval,
+            (IMP*)&orig_CDL_setFrameInterval
+        );
+
+        swizzleInstance(
+            cdl,
+            @selector(setPreferredFrameRateRange:),
+            (IMP)swiz_CDL_setPreferredFrameRateRange,
+            (IMP*)&orig_CDL_setPreferredFrameRateRange
+        );
+
+        swizzleInstance(
+            cdl,
+            @selector(setPreferredFramesPerSecond:),
+            (IMP)swiz_CDL_setPreferredFramesPerSecond,
+            (IMP*)&orig_CDL_setPreferredFramesPerSecond
+        );
+
+        swizzleInstance(
+            cdl,
+            @selector(addToRunLoop:forMode:),
+            (IMP)swiz_CDL_addToRunLoop,
+            (IMP*)&orig_CDL_addToRunLoop
+        );
+
+        swizzleClass(
+            cdl,
+            @selector(displayLinkWithTarget:selector:),
+            (IMP)swiz_CDL_displayLinkWithTarget,
+            (IMP*)&orig_CDL_displayLinkWithTarget
+        );
     }
 
-    swizzleInstance(
-        cdl,
-        @selector(setFrameInterval:),
-        (IMP)swiz_CDL_setFrameInterval,
-        (IMP*)&orig_CDL_setFrameInterval
-    );
-
-    swizzleInstance(
-        cdl,
-        @selector(setPreferredFrameRateRange:),
-        (IMP)swiz_CDL_setPreferredFrameRateRange,
-        (IMP*)&orig_CDL_setPreferredFrameRateRange
-    );
-
-    swizzleInstance(
-        cdl,
-        @selector(setPreferredFramesPerSecond:),
-        (IMP)swiz_CDL_setPreferredFramesPerSecond,
-        (IMP*)&orig_CDL_setPreferredFramesPerSecond
-    );
-
-    swizzleInstance(
-        cdl,
-        @selector(addToRunLoop:forMode:),
-        (IMP)swiz_CDL_addToRunLoop,
-        (IMP*)&orig_CDL_addToRunLoop
-    );
-
-    swizzleClass(
-        cdl,
-        @selector(displayLinkWithTarget:selector:),
-        (IMP)swiz_CDL_displayLinkWithTarget,
-        (IMP*)&orig_CDL_displayLinkWithTarget
-    );
+    applyGameFPSBypass();
 }
 
 __attribute__((constructor))
 static void init() {
-    logLine(@"[CAHighFPS] loaded");
-
     applySwizzles();
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         applySwizzles();
+        applyGameFPSBypass();
     });
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         applySwizzles();
+        applyGameFPSBypass();
+    });
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        applySwizzles();
+        applyGameFPSBypass();
     });
 }
