@@ -5,19 +5,29 @@
 
 #define TARGET_FPS 120
 
+static NSTimeInterval targetAnimationInterval(void) {
+    return 1.0 / (double)TARGET_FPS;
+}
+
 // Keep this symbol because main.m calls it with dlsym.
-// It does not need to spam logs in a normal build.
+// No debug spam.
 __attribute__((visibility("default")))
 void CAHighFPS_TestLog(void) {
 }
 
-// ---- original funcs ----
+// ---- CADisplayLink originals ----
 
 static void (*orig_CDL_setFrameInterval)(id, SEL, NSInteger);
 static void (*orig_CDL_setPreferredFrameRateRange)(id, SEL, CAFrameRateRange);
 static void (*orig_CDL_setPreferredFramesPerSecond)(id, SEL, NSInteger);
 static id   (*orig_CDL_displayLinkWithTarget)(id, SEL, id, SEL);
 static void (*orig_CDL_addToRunLoop)(id, SEL, NSRunLoop*, NSRunLoopMode);
+
+// ---- CCDirectorCaller originals ----
+
+static void (*orig_CCDirectorCaller_setAnimationInterval)(id, SEL, NSTimeInterval);
+static NSTimeInterval (*orig_CCDirectorCaller_animationInterval)(id, SEL);
+static void (*orig_CCDirectorCaller_startMainLoop)(id, SEL);
 
 // ---- helpers ----
 
@@ -86,6 +96,32 @@ static void swiz_CDL_addToRunLoop(id self, SEL _cmd, NSRunLoop* runLoop, NSRunLo
     forceDisplayLink120(self);
 }
 
+// ---- CCDirectorCaller game-side interval hooks ----
+
+static void swiz_CCDirectorCaller_setAnimationInterval(id self, SEL _cmd, NSTimeInterval interval) {
+    if (orig_CCDirectorCaller_setAnimationInterval) {
+        orig_CCDirectorCaller_setAnimationInterval(self, _cmd, targetAnimationInterval());
+    }
+}
+
+static NSTimeInterval swiz_CCDirectorCaller_animationInterval(id self, SEL _cmd) {
+    return targetAnimationInterval();
+}
+
+static void swiz_CCDirectorCaller_startMainLoop(id self, SEL _cmd) {
+    if (orig_CCDirectorCaller_startMainLoop) {
+        orig_CCDirectorCaller_startMainLoop(self, _cmd);
+    }
+
+    if ([self respondsToSelector:@selector(setAnimationInterval:)]) {
+        ((void (*)(id, SEL, NSTimeInterval))objc_msgSend)(
+            self,
+            @selector(setAnimationInterval:),
+            targetAnimationInterval()
+        );
+    }
+}
+
 // ---- swizzle helpers ----
 
 static void swizzleInstance(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
@@ -114,12 +150,6 @@ static void swizzleClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
         return;
     }
 
-    Class metaClass = object_getClass(cls);
-
-    if (!metaClass) {
-        return;
-    }
-
     Method method = class_getClassMethod(cls, sel);
 
     if (!method) {
@@ -136,9 +166,9 @@ static void swizzleClass(Class cls, SEL sel, IMP newImp, IMP *oldImp) {
     method_setImplementation(method, newImp);
 }
 
-// ---- apply ----
+// ---- apply hooks ----
 
-static void applySwizzles(void) {
+static void applyDisplayLinkHooks(void) {
     Class cdl = objc_getClass("CADisplayLink");
 
     if (!cdl) {
@@ -181,15 +211,53 @@ static void applySwizzles(void) {
     );
 }
 
+static void applyDirectorCallerHooks(void) {
+    Class caller = objc_getClass("CCDirectorCaller");
+
+    if (!caller) {
+        return;
+    }
+
+    swizzleInstance(
+        caller,
+        @selector(setAnimationInterval:),
+        (IMP)swiz_CCDirectorCaller_setAnimationInterval,
+        (IMP*)&orig_CCDirectorCaller_setAnimationInterval
+    );
+
+    swizzleInstance(
+        caller,
+        @selector(animationInterval),
+        (IMP)swiz_CCDirectorCaller_animationInterval,
+        (IMP*)&orig_CCDirectorCaller_animationInterval
+    );
+
+    swizzleInstance(
+        caller,
+        @selector(startMainLoop),
+        (IMP)swiz_CCDirectorCaller_startMainLoop,
+        (IMP*)&orig_CCDirectorCaller_startMainLoop
+    );
+}
+
+static void applyAllHooks(void) {
+    applyDisplayLinkHooks();
+    applyDirectorCallerHooks();
+}
+
 __attribute__((constructor))
 static void init() {
-    applySwizzles();
+    applyAllHooks();
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        applySwizzles();
+        applyAllHooks();
     });
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        applySwizzles();
+        applyAllHooks();
+    });
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        applyAllHooks();
     });
 }
