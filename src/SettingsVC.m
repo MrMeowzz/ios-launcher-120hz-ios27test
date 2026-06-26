@@ -1627,6 +1627,15 @@ extern NSString *lcAppUrlScheme;
 					}
 
 					[[Utils getPrefs] setBool:YES forKey:@"USE_MAX_FPS"];
+
+					NSString* patchChecksum = [Patcher getPatchChecksum:[bundlePath URLByAppendingPathComponent:@"GeometryOriginal"] withSafeMode:NO];
+					if (patchChecksum.length > 0) {
+						[[Utils getPrefs] setObject:patchChecksum forKey:@"PATCH_CHECKSUM"];
+						AppLog(@"Stored ANGLE patch checksum: %@", patchChecksum);
+					} else {
+						AppLog(@"Could not compute ANGLE patch checksum; launcher may still show patch diff.");
+					}
+
 					[Patcher patchGeode:^(BOOL success, NSString *error) {
 						AppLog(@"Patched Geode/mods for ANGLEGLKit (Success: %@, Error: %@)", success ? @"YES" : @"NO", error);
 						if (!success) {
