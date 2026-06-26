@@ -1,4 +1,5 @@
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
 #import "../src/components/LogUtils.h"
