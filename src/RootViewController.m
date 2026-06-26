@@ -763,21 +763,20 @@
 						return completionHandler(NO, @"Couldn't sign tweaks after patching Geode. Please refresh/import your certificate in settings.");
 					}
 
-					AppLog(@"Signed tweaks after patchGeode. Signing Geode mods...");
+					AppLog(@"Signed tweaks after patchGeode. Signing mods after ANGLE patch...");
 					[LCUtils signModsNew:[[LCPath dataPath] URLByAppendingPathComponent:@"game/geode"] force:YES progressHandler:^(NSProgress* progress) {
 					} completion:^(NSError* modSignError) {
 						if (modSignError != nil) {
 							AppLog(@"Detailed error for signing mods after patchGeode: %@", modSignError);
-							return completionHandler(NO, @"Couldn't sign mods after patching Geode. Please refresh/import your certificate in settings.");
+							return completionHandler(NO, @"Couldn't sign mods after patching ANGLEGLKit. Please refresh/import your certificate in settings.");
 						}
 
 						[LCUtils signMods:[[LCPath dataPath] URLByAppendingPathComponent:@"game/geode"] force:YES progressHandler:^(NSProgress* progress) {
-						} completion:^(NSError* oldModSignError) {
-							if (oldModSignError != nil) {
-								AppLog(@"Detailed error for signing legacy mods after patchGeode: %@", oldModSignError);
-								return completionHandler(NO, @"Couldn't sign mods after patching Geode. Please refresh/import your certificate in settings.");
+						} completion:^(NSError* legacyModSignError) {
+							if (legacyModSignError != nil) {
+								AppLog(@"Detailed error for legacy signing mods after patchGeode: %@", legacyModSignError);
+								return completionHandler(NO, @"Couldn't sign mods after patching ANGLEGLKit. Please refresh/import your certificate in settings.");
 							}
-
 							AppLog(@"Signed mods after patchGeode.");
 							completionHandler(YES, nil);
 						}];
