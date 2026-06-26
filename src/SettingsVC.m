@@ -50,58 +50,6 @@ extern NSString *lcAppUrlScheme;
 @end
 
 @implementation SettingsVC
-
-- (BOOL)copyANGLEFrameworksIntoBundle:(NSURL*)bundlePath error:(NSError**)error {
-	NSFileManager* fm = [NSFileManager defaultManager];
-	NSString* frameworksPath = [bundlePath URLByAppendingPathComponent:@"Frameworks"].path;
-	BOOL isDir = NO;
-
-	if (![fm fileExistsAtPath:frameworksPath isDirectory:&isDir]) {
-		if (![fm createDirectoryAtPath:frameworksPath withIntermediateDirectories:YES attributes:nil error:error]) {
-			return NO;
-		}
-	} else if (!isDir) {
-		if (error) {
-			*error = [NSError errorWithDomain:@"ANGLEPatch" code:1 userInfo:@{ NSLocalizedDescriptionKey : @"Frameworks exists but is not a directory." }];
-		}
-		return NO;
-	}
-
-	NSArray<NSString*>* frameworks = @[ @"ANGLEGLKit.framework", @"libEGL.framework", @"libGLESv2.framework" ];
-	for (NSString* framework in frameworks) {
-		NSString* src = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:[@"Frameworks" stringByAppendingPathComponent:framework]];
-		NSString* dst = [frameworksPath stringByAppendingPathComponent:framework];
-
-		if (![fm fileExistsAtPath:src]) {
-			if (error) {
-				*error = [NSError errorWithDomain:@"ANGLEPatch" code:2 userInfo:@{ NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Missing bundled %@", framework] }];
-			}
-			return NO;
-		}
-
-		[fm removeItemAtPath:dst error:nil];
-		if (![fm copyItemAtPath:src toPath:dst error:error]) {
-			return NO;
-		}
-		AppLog(@"Copied %@ into Geometry Dash Frameworks.", framework);
-	}
-
-	return YES;
-}
-
-- (void)removeANGLEFrameworksFromBundle:(NSURL*)bundlePath {
-	NSFileManager* fm = [NSFileManager defaultManager];
-	NSString* frameworksPath = [bundlePath URLByAppendingPathComponent:@"Frameworks"].path;
-	NSArray<NSString*>* frameworks = @[ @"ANGLEGLKit.framework", @"libEGL.framework", @"libGLESv2.framework" ];
-	for (NSString* framework in frameworks) {
-		NSString* path = [frameworksPath stringByAppendingPathComponent:framework];
-		if ([fm fileExistsAtPath:path]) {
-			[fm removeItemAtPath:path error:nil];
-			AppLog(@"Removed %@ from Geometry Dash Frameworks.", framework);
-		}
-	}
-}
-
 - (void)viewDidLoad {
 	[super viewDidLoad];
 	[self setTitle:@"Settings"];
@@ -1567,8 +1515,7 @@ extern NSString *lcAppUrlScheme;
 				[self.tableView reloadData];
 				return;
 			}
-
-			UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Warning" message:@"Enabling this option is experimental, as it changes the rendering engine Geometry Dash, Geode, and installed mods use to support the maximum refresh rate. Some mods may have graphical issues with ANGLEGLKit. Only enable this if you are okay with possible rendering differences.\n\nWould you like to enable anyways? You can always disable it later.".loc preferredStyle:UIAlertControllerStyleAlert];
+			UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Warning" message:@"Enabling this option is experimental, as it changes the rendering engine Geometry Dash uses to support the maximum refresh rate. While you may not notice any changes if you don't have mods, some mods will not function properly with this setting enabled. Only enable this if you do not care about graphical differences.\n\nWould you like to enable anyways? You can always disable if something goes wrong.".loc preferredStyle:UIAlertControllerStyleAlert];
 			UIAlertAction* okAction = [UIAlertAction actionWithTitle:@"Enable" style:UIAlertActionStyleDestructive handler:^(UIAlertAction* _Nonnull action) {
 				[Utils copyOrigBinary:^(BOOL isSuccess, NSString *errorStr) {
 					if (!isSuccess) {
@@ -1576,21 +1523,43 @@ extern NSString *lcAppUrlScheme;
 						[self.tableView reloadData];
 						return;
 					}
-
 					NSFileManager* fm = [NSFileManager defaultManager];
 					NSURL* bundlePath = [[LCPath bundlePath] URLByAppendingPathComponent:[Utils gdBundleName]];
-					NSError* frameworkError = nil;
-					if (![self copyANGLEFrameworksIntoBundle:bundlePath error:&frameworkError]) {
-						[Utils showError:self title:[NSString stringWithFormat:@"Failed to copy ANGLEGLKit frameworks: %@", frameworkError.localizedDescription ?: @"Unknown error"] error:nil];
-						[self.tableView reloadData];
-						return;
+					NSString *frameworksPath = [bundlePath URLByAppendingPathComponent:@"Frameworks"].path;
+					BOOL isDir;
+					if (![fm fileExistsAtPath:frameworksPath isDirectory:&isDir]) {
+						[fm createDirectoryAtPath:frameworksPath withIntermediateDirectories:YES attributes:nil error:nil];
+					}
+
+					AppLog(@"Refreshing ANGLE frameworks in installed GD bundle...");
+					NSArray<NSString*>* angleFrameworks = @[
+						@"ANGLEGLKit.framework",
+						@"libEGL.framework",
+						@"libGLESv2.framework"
+					];
+					for (NSString* frameworkName in angleFrameworks) {
+						NSString* sourcePath = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:[@"Frameworks" stringByAppendingPathComponent:frameworkName]];
+						NSString* targetPath = [frameworksPath stringByAppendingPathComponent:frameworkName];
+						if ([fm fileExistsAtPath:targetPath]) {
+							[fm removeItemAtPath:targetPath error:nil];
+						}
+						NSError* frameworkError = nil;
+						[fm copyItemAtPath:sourcePath toPath:targetPath error:&frameworkError];
+						if (frameworkError) {
+							AppLog(@"Failed to copy %@: %@", frameworkName, frameworkError);
+						} else {
+							AppLog(@"Copied %@", frameworkName);
+						}
 					}
 
 					if ([[Utils getPrefs] boolForKey:@"ENTERPRISE_MODE"]) {
 						NSString* caHighFPSPath = [bundlePath URLByAppendingPathComponent:@"CAHighFPS.dylib"].path;
 						NSString* caHighFPSTarget = [NSBundle.mainBundle.privateFrameworksPath stringByAppendingPathComponent:@"CAHighFPS.dylib"];
 
-						[fm removeItemAtPath:caHighFPSPath error:nil];
+						if ([fm fileExistsAtPath:caHighFPSPath]) {
+							[fm removeItemAtPath:caHighFPSPath error:nil];
+						}
+
 						NSError* caErr = nil;
 						[fm copyItemAtPath:caHighFPSTarget toPath:caHighFPSPath error:&caErr];
 
@@ -1603,9 +1572,11 @@ extern NSString *lcAppUrlScheme;
 
 					NSString* infoPath = [bundlePath URLByAppendingPathComponent:@"Info.plist"].path;
 					NSMutableDictionary* infoDict = [NSMutableDictionary dictionaryWithContentsOfFile:infoPath];
+
 					if (infoDict) {
 						infoDict[@"CADisableMinimumFrameDuration"] = @YES;
 						infoDict[@"CADisableMinimumFrameDurationOnPhone"] = @YES;
+
 						if ([infoDict writeToFile:infoPath atomically:YES]) {
 							AppLog(@"Added ProMotion Info.plist keys to installed GD bundle.");
 						} else {
@@ -1615,44 +1586,50 @@ extern NSString *lcAppUrlScheme;
 						AppLog(@"Failed to read installed GD Info.plist for ProMotion patch.");
 					}
 
-					AppLog(@"Patching Geometry Dash executable with ANGLEGLKit load command...");
+					AppLog(@"Patching GD with new load commands...");
 					NSString* execPath = [bundlePath URLByAppendingPathComponent:@"GeometryJump"].path;
-					NSString* parseError = LCParseMachO(execPath.UTF8String, false, ^(const char* path, struct mach_header_64* header, int fd, void* filePtr) {
-						LCPatchExecSlice(path, header, [[Utils getPrefs] boolForKey:@"ENTERPRISE_MODE"], true);
+					NSString* error = LCParseMachO(execPath.UTF8String, false, ^(const char* path, struct mach_header_64* header, int fd, void* filePtr) {
+						LCPatchExecSlice(path, header, [[Utils getPrefs] boolForKey:@"ENTERPRISE_MODE"], YES);
 					});
-					if (parseError) {
-						[Utils showError:self title:[NSString stringWithFormat:@"Failed to patch Geometry Dash: %@", parseError] error:nil];
+					if (error) {
+						[Utils showError:self title:[NSString stringWithFormat:@"Failed to patch Geometry Dash: %@", error] error:nil];
 						[self.tableView reloadData];
 						return;
 					}
-
-					[[Utils getPrefs] setBool:YES forKey:@"USE_MAX_FPS"];
-					[Patcher patchGeode:^(BOOL success, NSString *error) {
-						AppLog(@"Patched Geode/mods for ANGLEGLKit (Success: %@, Error: %@)", success ? @"YES" : @"NO", error);
-						if (!success) {
-							[Utils showError:self title:[NSString stringWithFormat:@"Failed to patch Geode/mods: %@", error ?: @"Unknown error"] error:nil];
-						}
-						[self.tableView reloadData];
-					}];
+					[Utils toggleKey:@"USE_MAX_FPS"];
+					[self.tableView reloadData];
 				}];
 			}];
-			UIAlertAction* cancelAction = [UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction* _Nonnull action) {
-				[self.tableView reloadData];
-			}];
+			UIAlertAction* cancelAction = [UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil];
 			[alert addAction:okAction];
 			[alert addAction:cancelAction];
 			[self presentViewController:alert animated:YES completion:nil];
 		} else {
-			[[Utils getPrefs] setBool:NO forKey:@"USE_MAX_FPS"];
+			[Utils toggleKey:@"USE_MAX_FPS"];
 			NSFileManager* fm = [NSFileManager defaultManager];
 			NSURL* bundlePath = [[LCPath bundlePath] URLByAppendingPathComponent:[Utils gdBundleName]];
 
-			[self removeANGLEFrameworksFromBundle:bundlePath];
+			NSString *frameworksPath = [bundlePath URLByAppendingPathComponent:@"Frameworks"].path;
+			BOOL isDir;
+			if ([fm fileExistsAtPath:frameworksPath isDirectory:&isDir]) {
+				if (isDir) {
+					if ([fm fileExistsAtPath:[frameworksPath stringByAppendingPathComponent:@"ANGLEGLKit.framework"] isDirectory:&isDir]) {
+						if (isDir) {
+							AppLog(@"Now deleting files...");
+							[fm removeItemAtPath:[frameworksPath stringByAppendingPathComponent:@"ANGLEGLKit.framework"] error:nil];
+							[fm removeItemAtPath:[frameworksPath stringByAppendingPathComponent:@"libEGL.framework"] error:nil];
+							[fm removeItemAtPath:[frameworksPath stringByAppendingPathComponent:@"libGLESv2.framework"] error:nil];
+						}
+					}
+				}
+			} else {
+				AppLog(@"Frameworks dir doesn't exist, skipping...");
+			}
 
 			if (![fm fileExistsAtPath:[bundlePath URLByAppendingPathComponent:@"GeometryOriginal"].path]) {
-				AppLog(@"Not restoring binary because GeometryOriginal is missing.");
+				AppLog(@"Not restoring binary.");
 			} else {
-				NSError* err = nil;
+				NSError* err;
 				[fm removeItemAtURL:[bundlePath URLByAppendingPathComponent:@"GeometryJump"] error:&err];
 				if (err) {
 					AppLog(@"Couldn't remove patched binary: %@", err);
@@ -1662,14 +1639,12 @@ extern NSString *lcAppUrlScheme;
 						AppLog(@"Couldn't copy binary: %@", err);
 					} else {
 						[[Utils getPrefs] setObject:@"NO" forKey:@"PATCH_CHECKSUM"];
-						AppLog(@"Restored original Geometry Dash binary.");
+						AppLog(@"Restored original binary.");
 					}
 				}
 			}
-
 			[Patcher patchGeode:^(BOOL success, NSString *error) {
-				AppLog(@"Restored Geode/mods OpenGLES state (Success: %@, Error: %@)", success ? @"YES" : @"NO", error);
-				[self.tableView reloadData];
+				AppLog(@"Patched Geode (Success: %@, Error: %@)", (success) ? @"YES" : @"NO", error);
 			}];
 		}
 		[self.tableView reloadData];
