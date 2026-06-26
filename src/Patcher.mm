@@ -595,176 +595,71 @@ for func in list:
 		}
 	}
 	if (forceSign) {
-        [LCUtils signModsNew:[[LCPath dataPath] URLByAppendingPathComponent:@"game/geode"]
-            force:NO
-            progressHandler:^(NSProgress* p) {}
-            completion:^(NSError* error) {
-                if (error) AppLog(@"[startUnzip] Signing error: %@", error);
-                completionHandler(forceSign);
-            }];
-    } else {
-        completionHandler(forceSign);
-    }
+		[LCUtils signModsNew:[[LCPath dataPath] URLByAppendingPathComponent:@"game/geode"]
+			force:YES
+			progressHandler:^(NSProgress* p) {}
+			completion:^(NSError* error) {
+				if (error) AppLog(@"[startUnzip] Signing error: %@", error);
+				completionHandler(forceSign);
+			}];
+	} else {
+		completionHandler(forceSign);
+	}
 }
 + (void)patchGeode:(void (^)(BOOL success, NSString* error))completionHandler {
-	if ([[Utils getPrefs] boolForKey:@"ENTERPRISE_MODE"]) {
-		AppLog(@"Skipping to Patch Geode because Enterprise Mode.");
-		return completionHandler(YES, @"");
-	}
+	BOOL useANGLE = [[Utils getPrefs] boolForKey:@"USE_MAX_FPS"];
 	if ([UIScreen mainScreen].maximumFramesPerSecond <= 60 && ![[Utils getPrefs] boolForKey:@"FORCE_ANGLE"]) {
-		AppLog(@"Skipping to Patch Geode because device doesn't support Pro-Motion.");
+		AppLog(@"Skipping Geode / mod ANGLE patch because device doesn't support ProMotion.");
 		return completionHandler(YES, @"");
 	}
-	AppLog(@"Patching Geode and mods...");
-	NSFileManager* fm = [NSFileManager defaultManager];
-	NSError* error;
-	NSString* unzipModsPath = [[LCPath dataPath] URLByAppendingPathComponent:@"game/geode/unzipped"].path;
-	NSString* unzipBinModsPath = [[LCPath dataPath] URLByAppendingPathComponent:@"game/geode/unzipped/binaries"].path;
-	NSString* zipModsPath = [[LCPath dataPath] URLByAppendingPathComponent:@"game/geode/mods"].path;
-	NSURL* savedJSONURL = [[LCPath dataPath] URLByAppendingPathComponent:@"save/geode/mods/geode.loader/saved.json"];
-	NSData* savedJSONData = [NSData dataWithContentsOfURL:savedJSONURL options:0 error:&error];
-	NSDictionary* savedJSONDict;
-	BOOL canParseJSON = NO;
-	NSMutableSet<NSString*>* modIDs = [NSMutableSet new];
-	NSMutableArray<NSString*>* modEnabledDict = [NSMutableArray new];
 
-	NSArray* modsDir = [fm contentsOfDirectoryAtPath:unzipModsPath error:&error];
-	if (error) {
-		error = nil;
-	}
-	NSArray* modsBinDir = [fm contentsOfDirectoryAtPath:unzipBinModsPath error:&error];
-	if (error) {
-		error = nil;
-	}
-	if (!error && savedJSONData != nil) {
-		savedJSONDict = [NSJSONSerialization JSONObjectWithData:savedJSONData options:kNilOptions error:&error];
-		if (!error && savedJSONDict && [savedJSONDict isKindOfClass:[NSDictionary class]]) {
-			canParseJSON = YES;
-			for (NSString *key in savedJSONDict.allKeys) {
-				if ([key hasPrefix:@"should-load-"]) {
-					BOOL value = [savedJSONDict[key] boolValue];
-					if (value) {
-						NSString *modID = [key substringFromIndex:12];
-						if ([fm fileExistsAtPath:[zipModsPath stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.geode", modID]]]) {
-							[modIDs addObject:modID];
-							[modEnabledDict addObject:[NSString stringWithFormat:@"%@.ios.dylib", modID]];
-						}
-					}
-				}
-			}
-			for (NSString *file in modsBinDir) {
-				NSString *modID = [[file stringByDeletingPathExtension] stringByDeletingPathExtension];
-				NSString *key = [NSString stringWithFormat:@"should-load-%@", modID];
-				if (!savedJSONDict[key]) {
-					if (![modEnabledDict containsObject:file]) {
-						if ([fm fileExistsAtPath:[zipModsPath stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.geode", modID]]]) {
-							[modIDs addObject:modID];
-							[modEnabledDict addObject:file];
-						}
-					}
-				}
-			}
-		} else {
-			canParseJSON = NO;
-		}
-	}
-	NSMutableSet<NSString*>* modDict = [NSMutableSet new];
+	AppLog(@"Patching Geode and mods. ANGLEGLKit enabled? %@", useANGLE ? @"YES" : @"NO");
+
+	NSFileManager* fm = [NSFileManager defaultManager];
+	NSMutableOrderedSet<NSString*>* dylibsToPatch = [NSMutableOrderedSet orderedSet];
+
 	NSString* geodePath = [Utils getTweakDir];
-	if (geodePath) {
-		NSString* error = LCParseMachO(geodePath.UTF8String, false, ^(const char* path, struct mach_header_64* header, int fd, void* filePtr) {
-			if (LCPatchLibWithANGLE(path, header, [[Utils getPrefs] boolForKey:@"USE_MAX_FPS"])) {
-				if ([[Utils getPrefs] boolForKey:@"USE_MAX_FPS"]) {
-					AppLog(@"Patched Geode.ios.dylib to use ANGLEGLKit!");
-				} else {
-					AppLog(@"Patched Geode.ios.dylib to use OpenGLES!");
-				}
-			}
-		});
-		if (error) {
-			return completionHandler(NO, error);
-		}
+	if (geodePath.length > 0 && [fm fileExistsAtPath:geodePath]) {
+		[dylibsToPatch addObject:geodePath];
 	}
-	if (canParseJSON) {
-		NSMutableArray<NSString*>* modConflictDict = [NSMutableArray new];
-		for (NSString* modId in modsBinDir) {
-			if ([modEnabledDict containsObject:modId]) {
-				[modIDs addObject:[[modId stringByDeletingLastPathComponent] stringByDeletingLastPathComponent]];
-				[modDict addObject:[unzipBinModsPath stringByAppendingPathComponent:[NSString stringWithFormat:@"/%@", modId]]];
-				[modConflictDict addObject:modId];
-			}
-		}
-		for (NSString* modId in modsDir) {
-			NSString* modPath = [unzipModsPath stringByAppendingPathComponent:modId];
-			BOOL isDir;
-			if (![fm fileExistsAtPath:modPath isDirectory:&isDir] || !isDir) continue;
-			NSArray* modDir = [fm contentsOfDirectoryAtPath:modPath error:&error];
-			if (error) continue;
-			NSError* error2;
-			NSData* modJSONData = [NSData dataWithContentsOfFile:[modPath stringByAppendingPathComponent:@"/mod.json"] options:0 error:&error2];
-			if (error2) continue;
-			NSDictionary *modJSON = [NSJSONSerialization JSONObjectWithData:modJSONData options:kNilOptions error:&error2]; // JSONJSON
-			if (error2 || ![modJSON isKindOfClass:[NSDictionary class]]) continue;
-			NSString* godeSDK = modJSON[@"geode"];
-			if ([modJSON objectForKey:@"requires-patching"] != nil) {
-				BOOL requiresPatching = modJSON[@"requires-patching"];
-				if (requiresPatching) {
-					AppLog(@"%@ requires JIT! Skipping!", modId);
-					if ([modIDs containsObject:modId]) {
-						[modIDs removeObject:modId];
-					}
-					if ([modEnabledDict containsObject:modId]) {
-						[modEnabledDict removeObject:modId];
-					}
-				}
-			}
-			if (![godeSDK isKindOfClass:[NSString class]]) continue;
-			NSArray *verComponents = [[godeSDK componentsSeparatedByString:@"-"].firstObject componentsSeparatedByString:@"."];
-			if (verComponents.count == 0) continue;
-			NSArray *currComponents = [[[Utils getRealGeodeVersion:NO] componentsSeparatedByString:@"-"].firstObject componentsSeparatedByString:@"."];
-			if (currComponents.count == 0) continue;
-			if ([verComponents[0] integerValue] != [currComponents[0] integerValue]) {
-				AppLog(@"%@ has a different SDK version! Skipping! (%@ vs %@)", modId, [Utils getRealGeodeVersion:NO], godeSDK);
-				if ([modIDs containsObject:modId]) {
-					[modIDs removeObject:modId];
-				}
-				if ([modEnabledDict containsObject:modId]) {
-					[modEnabledDict removeObject:modId];
-				}
+
+	NSString* unzipModsPath = [[LCPath dataPath] URLByAppendingPathComponent:@"game/geode/unzipped"].path;
+	BOOL isDir = NO;
+	if ([fm fileExistsAtPath:unzipModsPath isDirectory:&isDir] && isDir) {
+		NSDirectoryEnumerator<NSString*>* enumerator = [fm enumeratorAtPath:unzipModsPath];
+		for (NSString* relativePath in enumerator) {
+			if (![relativePath hasSuffix:@".ios.dylib"]) {
 				continue;
 			}
-			for (NSString* file in modDir) {
-				if ([file hasSuffix:@"ios.dylib"]) {
-					if ([modEnabledDict containsObject:file] && ![modConflictDict containsObject:file]) {
-						[modIDs addObject:modId];
-						[modDict addObject:[modPath stringByAppendingPathComponent:[NSString stringWithFormat:@"/%@", file]]];
-					}
-				}
+
+			NSString* fullPath = [unzipModsPath stringByAppendingPathComponent:relativePath];
+			BOOL itemIsDir = NO;
+			if ([fm fileExistsAtPath:fullPath isDirectory:&itemIsDir] && !itemIsDir) {
+				[dylibsToPatch addObject:fullPath];
 			}
 		}
 	}
-	NSArray<NSString*>* modDictSort = [[modDict allObjects] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
-	NSMutableArray* modIDSorted = [[[modIDs allObjects] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)] mutableCopy];
-	for (int i = 0; i < modIDSorted.count; i++) {
-		NSString *item = modIDSorted[i];
-		if (item == nil || [item isEqualToString:@""]) {
-			[modIDSorted removeObjectAtIndex:i];
-		}
-	}
-	for (int i = 0; i < modDictSort.count; i++) {
-		NSString* modName = [[modDictSort objectAtIndex:i] lastPathComponent];
-		NSString* error = LCParseMachO([modDictSort objectAtIndex:i].UTF8String, false, ^(const char* path, struct mach_header_64* header, int fd, void* filePtr) {
-			if (LCPatchLibWithANGLE(path, header, [[Utils getPrefs] boolForKey:@"USE_MAX_FPS"])) {
-				if ([[Utils getPrefs] boolForKey:@"USE_MAX_FPS"]) {
-					AppLog(@"Patched %@ to use ANGLEGLKit!", modName);
+
+	__block NSUInteger patchedCount = 0;
+	for (NSString* dylibPath in dylibsToPatch) {
+		NSString* dylibName = dylibPath.lastPathComponent;
+		NSString* parseError = LCParseMachO(dylibPath.UTF8String, false, ^(const char* path, struct mach_header_64* header, int fd, void* filePtr) {
+			if (LCPatchLibWithANGLE(path, header, useANGLE)) {
+				patchedCount++;
+				if (useANGLE) {
+					AppLog(@"Patched %@ to use ANGLEGLKit.", dylibName);
 				} else {
-					AppLog(@"Patched %@ to use OpenGLES!", modName);
+					AppLog(@"Restored %@ to use OpenGLES.", dylibName);
 				}
 			}
 		});
-		if (error) {
-			AppLog(@"Error while parsing %@: %@", modName, error);
+
+		if (parseError) {
+			AppLog(@"Error while parsing %@: %@", dylibName, parseError);
 		}
 	}
+
+	AppLog(@"Finished Geode / mod ANGLE patch. Patched %lu file(s).", (unsigned long)patchedCount);
 	completionHandler(YES, @"");
 }
 // handler addr being that textHandlerStorage

@@ -37,7 +37,7 @@ static void insertDylibCommand(uint32_t cmd, const char* path, struct mach_heade
 	header->sizeofcmds += dylib->cmdsize;
 }
 
-static void replaceDylibPath(struct mach_header_64* header, const char* oldPath, const char* newPath) {
+static BOOL replaceDylibPath(struct mach_header_64* header, const char* oldPath, const char* newPath) {
 	uint8_t* imageHeaderPtr = (uint8_t*)header + sizeof(struct mach_header_64);
 	struct load_command* command = (struct load_command*)imageHeaderPtr;
 	for (int i = 0; i < header->ncmds; i++) {
@@ -47,7 +47,8 @@ static void replaceDylibPath(struct mach_header_64* header, const char* oldPath,
 			if (strcmp(dylibName, oldPath) == 0) {
 				uint32_t newNameLen = (uint32_t)strlen(newPath) + 1;
 				uint32_t newCmdSize = sizeof(struct dylib_command) + rnd32(newNameLen, 8);
-				int32_t sizeDiff = newCmdSize - dylib->cmdsize;
+				int32_t sizeDiff = (int32_t)newCmdSize - (int32_t)dylib->cmdsize;
+
 				if (sizeDiff != 0) {
 					uint8_t* nextCmd = (uint8_t*)command + dylib->cmdsize;
 					uint8_t* endOfCmds = imageHeaderPtr + header->sizeofcmds;
@@ -57,14 +58,16 @@ static void replaceDylibPath(struct mach_header_64* header, const char* oldPath,
 					}
 					header->sizeofcmds += sizeDiff;
 				}
+
 				memset((uint8_t*)dylib + sizeof(struct dylib_command), 0, newCmdSize - sizeof(struct dylib_command));
 				dylib->cmdsize = newCmdSize;
 				strcpy((char*)dylib + dylib->dylib.name.offset, newPath);
-				break;
+				return YES;
 			}
 		}
 		command = (struct load_command*)((uint8_t*)command + command->cmdsize);
 	}
+	return NO;
 }
 
 void noopOverwrite(struct load_command* command) {
@@ -132,14 +135,11 @@ BOOL isBinarySigned(struct mach_header_64* header) {
 // -1 = Binary is signed, cant manipulate
 int LCPatchExecSlice(const char* path, struct mach_header_64* header, bool withGeode, bool withANGLE) {
 	uint8_t* imageHeaderPtr = (uint8_t*)header + sizeof(struct mach_header_64);
-	// if (isBinarySigned(header)) {
-	// 	AppLog(@"Binary is signed! If you crash then restore binary!");
-	// 	//return -1;
-	// }
-	// Literally convert an executable to a dylib
+
+	// Literally convert an executable to a dylib for normal launcher mode, or restore it
+	// to an executable when Geode is injected through EnterpriseLoader.
 	if (header->magic == MH_MAGIC_64) {
-		// assert(header->flags & MH_PIE);
-		if (withGeode) { // how about no, we want it as executable again!
+		if (withGeode) {
 			header->filetype = MH_EXECUTE;
 			header->flags |= MH_PIE;
 			header->flags &= ~MH_NO_REEXPORTED_DYLIBS;
@@ -150,7 +150,7 @@ int LCPatchExecSlice(const char* path, struct mach_header_64* header, bool withG
 		}
 	}
 
-	// Patch __PAGEZERO to map just a single zero page, fixing "out of address space"
+	// Patch __PAGEZERO to map just a single zero page, fixing "out of address space".
 	struct segment_command_64* seg = (struct segment_command_64*)imageHeaderPtr;
 	assert(seg->cmd == LC_SEGMENT_64 || seg->cmd == LC_ID_DYLIB);
 	if (seg->cmd == LC_SEGMENT_64 && seg->vmaddr == 0) {
@@ -158,27 +158,26 @@ int LCPatchExecSlice(const char* path, struct mach_header_64* header, bool withG
 		seg->vmaddr = 0x100000000 - 0x4000;
 		seg->vmsize = 0x4000;
 	} else if (withGeode) {
-		// we arent containerizing it so...
 		seg->vmaddr = 0x0;
 		seg->vmsize = 0x100000000;
 	}
 
-	BOOL hasDylibCommand = NO, hasLoaderCommand = NO, hasANGLECommand = NO;
+	BOOL hasDylibCommand = NO;
+	BOOL hasLoaderCommand = NO;
+	BOOL hasOpenGLESCommand = NO;
+	BOOL hasANGLECommand = NO;
 	const char* tweakLoaderPath = "@loader_path/../../Tweaks/TweakLoader.dylib";
 	const char* geodeLoaderPath = "@executable_path/EnterpriseLoader.dylib";
-	struct load_command* command = (struct load_command*)imageHeaderPtr;
-	struct load_command* lcIDcmd;
-	struct dylib_command* lcLOADcmd;
-
 	const char* openGlesLoadCmd = "/System/Library/Frameworks/OpenGLES.framework/OpenGLES";
 	const char* ANGLELoadCmd = "@executable_path/Frameworks/ANGLEGLKit.framework/ANGLEGLKit";
-	//const char* rPathLoadCmd = "@executable_path/Frameworks";
+	struct load_command* command = (struct load_command*)imageHeaderPtr;
+	struct load_command* lcIDcmd = NULL;
+	struct dylib_command* lcLOADcmd = NULL;
+
 	if (NSClassFromString(@"LCSharedUtils")) {
 		NSURL* bundlePath = [[LCPath bundlePath] URLByAppendingPathComponent:[Utils gdBundleName]];
 		NSString* frameworks = [bundlePath URLByAppendingPathComponent:@"Frameworks"].path;
-		//rPathLoadCmd = frameworks.UTF8String;
-		//rPathLoadCmd = "@loader_path/Frameworks";
-		AppLog(@"Detected LiveContainer! Using different rpath... (%@)", frameworks);
+		AppLog(@"Detected LiveContainer! ANGLE should resolve from GD Frameworks: %@", frameworks);
 	}
 
 	for (int i = 0; i < header->ncmds; i++) {
@@ -187,25 +186,26 @@ int LCPatchExecSlice(const char* path, struct mach_header_64* header, bool withG
 			hasDylibCommand = YES;
 		} else if (command->cmd == LC_LOAD_DYLIB) {
 			struct dylib_command* dylib = (struct dylib_command*)command;
-			char* dylibName = (void*)dylib + dylib->dylib.name.offset;
-			if (!strncmp(dylibName, tweakLoaderPath, strlen(tweakLoaderPath))) {
+			char* dylibName = (char*)dylib + dylib->dylib.name.offset;
+			if (strcmp(dylibName, tweakLoaderPath) == 0) {
 				lcLOADcmd = dylib;
 				hasLoaderCommand = YES;
 			}
-			if (!strncmp(dylibName, openGlesLoadCmd, strlen(openGlesLoadCmd))) {
-				hasANGLECommand = NO;
+			if (strcmp(dylibName, openGlesLoadCmd) == 0) {
+				hasOpenGLESCommand = YES;
 			}
-			if (!strncmp(dylibName, ANGLELoadCmd, strlen(ANGLELoadCmd))) {
+			if (strcmp(dylibName, ANGLELoadCmd) == 0) {
 				hasANGLECommand = YES;
 			}
 		}
 		command = (struct load_command*)((void*)command + command->cmdsize);
 	}
-	if (withGeode) { // we're just going to decide to NO-OP the commands then i guess add the LC_LOAD_DYLIB command
+
+	if (withGeode) {
 		if (hasDylibCommand && hasLoaderCommand) {
 			uint32_t totalSpace = lcIDcmd->cmdsize + lcLOADcmd->cmdsize;
 			uint32_t newCmdSize = sizeof(struct dylib_command) + rnd32((uint32_t)strlen(geodeLoaderPath) + 1, 8);
-			if (newCmdSize <= totalSpace) { // this shouldnt happen but you never know!
+			if (newCmdSize <= totalSpace) {
 				memset(lcIDcmd, 0, totalSpace);
 				struct dylib_command* newCmd = (struct dylib_command*)lcIDcmd;
 				newCmd->cmd = LC_LOAD_DYLIB;
@@ -218,7 +218,7 @@ int LCPatchExecSlice(const char* path, struct mach_header_64* header, bool withG
 
 				if (totalSpace > newCmdSize) {
 					struct load_command* padding = (struct load_command*)((uint8_t*)newCmd + newCmdSize);
-					padding->cmd = 0; // This will be ignored
+					padding->cmd = 0;
 					padding->cmdsize = totalSpace - newCmdSize;
 				}
 				header->ncmds--;
@@ -228,9 +228,6 @@ int LCPatchExecSlice(const char* path, struct mach_header_64* header, bool withG
 				insertDylibCommand(LC_LOAD_DYLIB, geodeLoaderPath, header);
 				header->ncmds -= 2;
 			}
-		} else {
-			// something must really be wrong if this were to pass
-			// insertDylibCommand(LC_LOAD_DYLIB, geodeLoaderPath, header);
 		}
 	} else {
 		if (!hasDylibCommand) {
@@ -240,77 +237,81 @@ int LCPatchExecSlice(const char* path, struct mach_header_64* header, bool withG
 			insertDylibCommand(LC_LOAD_DYLIB, tweakLoaderPath, header);
 		}
 	}
+
 	if (withANGLE) {
-		if (!hasANGLECommand) {
-			replaceDylibPath(header, openGlesLoadCmd, ANGLELoadCmd);
+		if (hasOpenGLESCommand && !hasANGLECommand) {
+			if (replaceDylibPath(header, openGlesLoadCmd, ANGLELoadCmd)) {
+				AppLog(@"Patched Geometry Dash executable to use ANGLEGLKit.");
+			}
 		}
-	}/* else {
-		// not sure if this is even necessary actually considering the orig binary shouldnt even have this load command
+	} else {
 		if (hasANGLECommand) {
-			replaceDylibPath(header, ANGLELoadCmd, openGlesLoadCmd);
+			if (replaceDylibPath(header, ANGLELoadCmd, openGlesLoadCmd)) {
+				AppLog(@"Restored Geometry Dash executable to use OpenGLES.");
+			}
 		}
-	}*/
+	}
+
 	return 0;
 }
 
 BOOL LCPatchLibWithANGLE(const char* path, struct mach_header_64* header, bool withANGLE) {
-	AppLog(@"Patching %@ with ANGLE? %@", [NSString stringWithUTF8String:path], (withANGLE) ? @"YES" : @"NO");
+	AppLog(@"Patching %@ with ANGLE? %@", [NSString stringWithUTF8String:path], withANGLE ? @"YES" : @"NO");
+
+	// Do not refuse signed dylibs here. Rewriting the load command invalidates the
+	// old signature anyway, and the launcher signs the patched files afterwards.
 	if (isBinarySigned(header)) {
-		AppLog(@"Can't patch library: Binary is signed.");
-		return NO;
+		AppLog(@"Library has a code signature; patching anyway and expecting it to be re-signed.");
 	}
+
 	uint8_t* imageHeaderPtr = (uint8_t*)header + sizeof(struct mach_header_64);
 	if (header->magic == MH_MAGIC_64) {
 		header->filetype = MH_DYLIB;
-		// header->flags |= MH_NO_REEXPORTED_DYLIBS;
 		header->flags &= ~MH_PIE;
 	}
 
-	BOOL hasANGLECommand = NO, hasOGLCommand = NO;
+	BOOL hasOpenGLESCommand = NO;
+	BOOL hasANGLECommand = NO;
 	struct load_command* command = (struct load_command*)imageHeaderPtr;
 
 	const char* openGlesLoadCmd = "/System/Library/Frameworks/OpenGLES.framework/OpenGLES";
 	const char* ANGLELoadCmd = "@executable_path/Frameworks/ANGLEGLKit.framework/ANGLEGLKit";
-	//const char* rPathLoadCmd = "@executable_path/Frameworks";
+
 	if (NSClassFromString(@"LCSharedUtils")) {
 		NSURL* bundlePath = [[LCPath bundlePath] URLByAppendingPathComponent:[Utils gdBundleName]];
 		NSString* frameworks = [bundlePath URLByAppendingPathComponent:@"Frameworks"].path;
-		//rPathLoadCmd = frameworks.UTF8String;
-		AppLog(@"Detected LiveContainer! Using different rpath... (%@)", frameworks);
-		//rPathLoadCmd = "@loader_path/Frameworks";
+		AppLog(@"Detected LiveContainer! ANGLE should resolve from GD Frameworks: %@", frameworks);
 	}
 
 	for (int i = 0; i < header->ncmds; i++) {
 		if (command->cmd == LC_LOAD_DYLIB) {
 			struct dylib_command* dylib = (struct dylib_command*)command;
-			char* dylibName = (void*)dylib + dylib->dylib.name.offset;
-			if (!strncmp(dylibName, openGlesLoadCmd, strlen(openGlesLoadCmd))) {
-				hasANGLECommand = NO;
-				hasOGLCommand = YES;
+			char* dylibName = (char*)dylib + dylib->dylib.name.offset;
+			if (strcmp(dylibName, openGlesLoadCmd) == 0) {
+				hasOpenGLESCommand = YES;
 			}
-			if (!strncmp(dylibName, ANGLELoadCmd, strlen(ANGLELoadCmd))) {
+			if (strcmp(dylibName, ANGLELoadCmd) == 0) {
 				hasANGLECommand = YES;
-				hasOGLCommand = NO;
 			}
 		}
 		command = (struct load_command*)((void*)command + command->cmdsize);
 	}
-	if (!hasOGLCommand && !hasANGLECommand) return NO; // we will assume the mod doesnt need any
-	if (withANGLE) {
-		if (!hasANGLECommand) {
-			replaceDylibPath(header, openGlesLoadCmd, ANGLELoadCmd);
-		} else {
-			return NO;
-		}
-	} else {
-		/*if (hasANGLECommand) {
-			replaceDylibPath(header, ANGLELoadCmd, openGlesLoadCmd);
-		} else {
-			return NO;
-		}*/
+
+	if (!hasOpenGLESCommand && !hasANGLECommand) {
 		return NO;
 	}
-	return YES;
+
+	if (withANGLE) {
+		if (hasANGLECommand) {
+			return NO;
+		}
+		return replaceDylibPath(header, openGlesLoadCmd, ANGLELoadCmd);
+	}
+
+	if (hasOpenGLESCommand) {
+		return NO;
+	}
+	return replaceDylibPath(header, ANGLELoadCmd, openGlesLoadCmd);
 }
 
 NSString* LCParseMachO(const char* path, bool readOnly, LCParseMachOCallback callback) {
