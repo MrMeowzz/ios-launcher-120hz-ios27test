@@ -1,6 +1,7 @@
 #import "LCUtils/FoundationPrivate.h"
 #include "src/Patcher.h"
 #import "LCUtils/GCSharedUtils.h"
+#import "LCUtils/LCUtils.h"
 #import "LCUtils/Shared.h"
 #import "LCUtils/UIKitPrivate.h"
 #import "LCUtils/utils.h"
@@ -486,6 +487,20 @@ static void preloadANGLEFrameworksFromBundle(NSString* bundlePath) {
 
 	ANGLEPrepareFrameworkLookup(frameworksPath);
 	ANGLEInstallDlopenHook();
+
+	NSString* angleBinary = [frameworksPath stringByAppendingPathComponent:@"ANGLEGLKit.framework/ANGLEGLKit"];
+	if ([[NSFileManager defaultManager] fileExistsAtPath:angleBinary]) {
+		NSString* anglePatchError = LCParseMachO(angleBinary.UTF8String, false, ^(const char* path, struct mach_header_64* header, int fd, void* filePtr) {
+			LCPatchANGLEFrameworkSlice(path, header);
+		});
+		if (anglePatchError) {
+			AppLog(@"[invokeAppMain] Failed to patch installed ANGLEGLKit before preload: %@", anglePatchError);
+		} else {
+			AppLog(@"[invokeAppMain] Patched installed ANGLEGLKit before preload.");
+		}
+	} else {
+		AppLog(@"[invokeAppMain] Installed ANGLEGLKit binary is missing before preload: %@", angleBinary);
+	}
 
 	NSArray<NSString*>* libs = @[
 		[frameworksPath stringByAppendingPathComponent:@"libGLESv2.framework/libGLESv2"],
