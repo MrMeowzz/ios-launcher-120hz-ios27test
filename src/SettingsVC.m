@@ -19,8 +19,6 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include <dlfcn.h>
 #include <spawn.h>
-#import <mach-o/fat.h>
-#import <mach-o/loader.h>
 
 #import "Patcher.h"
 
@@ -53,104 +51,6 @@ extern NSString *lcAppUrlScheme;
 
 @implementation SettingsVC
 
-static BOOL GDFileLooksLikeMachO(NSString* path) {
-	NSFileManager* fm = [NSFileManager defaultManager];
-
-	BOOL isDir = NO;
-	if (![fm fileExistsAtPath:path isDirectory:&isDir] || isDir) {
-		return NO;
-	}
-
-	NSFileHandle* handle = [NSFileHandle fileHandleForReadingAtPath:path];
-	if (!handle) {
-		return NO;
-	}
-
-	NSData* data = [handle readDataOfLength:4];
-	[handle closeFile];
-
-	if (data.length < 4) {
-		return NO;
-	}
-
-	uint32_t magic = 0;
-	[data getBytes:&magic length:sizeof(uint32_t)];
-
-	return magic == MH_MAGIC_64 ||
-	       magic == MH_MAGIC ||
-	       magic == FAT_MAGIC ||
-	       magic == FAT_CIGAM ||
-	       magic == FAT_MAGIC_64 ||
-	       magic == FAT_CIGAM_64;
-}
-
-static NSString* GDFindMachOBinaryInFramework(NSString* frameworkPath, NSString* binaryName) {
-	NSFileManager* fm = [NSFileManager defaultManager];
-
-	NSArray<NSString*>* candidates = @[
-		[frameworkPath stringByAppendingPathComponent:binaryName],
-		[[frameworkPath stringByAppendingPathComponent:@"Versions/A"] stringByAppendingPathComponent:binaryName],
-	];
-
-	for (NSString* candidate in candidates) {
-		if (GDFileLooksLikeMachO(candidate)) {
-			return candidate;
-		}
-	}
-
-	NSDirectoryEnumerator* enumerator = [fm enumeratorAtPath:frameworkPath];
-	NSString* relativePath = nil;
-
-	while ((relativePath = [enumerator nextObject])) {
-		NSString* fullPath = [frameworkPath stringByAppendingPathComponent:relativePath];
-
-		BOOL isDir = NO;
-		if ([fm fileExistsAtPath:fullPath isDirectory:&isDir] && isDir) {
-			continue;
-		}
-
-		if ([[fullPath lastPathComponent] isEqualToString:binaryName] && GDFileLooksLikeMachO(fullPath)) {
-			return fullPath;
-		}
-	}
-
-	enumerator = [fm enumeratorAtPath:frameworkPath];
-	while ((relativePath = [enumerator nextObject])) {
-		NSString* fullPath = [frameworkPath stringByAppendingPathComponent:relativePath];
-
-		BOOL isDir = NO;
-		if ([fm fileExistsAtPath:fullPath isDirectory:&isDir] && isDir) {
-			continue;
-		}
-
-		if (GDFileLooksLikeMachO(fullPath)) {
-			return fullPath;
-		}
-	}
-
-	return nil;
-}
-
-static NSString* GDBundledANGLEFrameworkSource(NSString* frameworkName) {
-	NSFileManager* fm = [NSFileManager defaultManager];
-	NSString* bundlePath = NSBundle.mainBundle.bundlePath;
-
-	NSArray<NSString*>* candidates = @[
-		[[bundlePath stringByAppendingPathComponent:@"Frameworks"] stringByAppendingPathComponent:frameworkName],
-		[[bundlePath stringByAppendingPathComponent:@"Resources/GDFrameworks"] stringByAppendingPathComponent:frameworkName],
-		[[bundlePath stringByAppendingPathComponent:@"GDFrameworks"] stringByAppendingPathComponent:frameworkName],
-	];
-
-	for (NSString* candidate in candidates) {
-		BOOL isDir = NO;
-		if ([fm fileExistsAtPath:candidate isDirectory:&isDir] && isDir) {
-			return candidate;
-		}
-	}
-
-	return nil;
-}
-
 - (BOOL)copyANGLEFrameworksIntoBundle:(NSURL*)bundlePath error:(NSError**)error {
 	NSFileManager* fm = [NSFileManager defaultManager];
 	NSString* frameworksPath = [bundlePath URLByAppendingPathComponent:@"Frameworks"].path;
@@ -162,77 +62,41 @@ static NSString* GDBundledANGLEFrameworkSource(NSString* frameworkName) {
 		}
 	} else if (!isDir) {
 		if (error) {
-			*error = [NSError errorWithDomain:@"ANGLEPatch"
-			                             code:1
-			                         userInfo:@{
-				NSLocalizedDescriptionKey : @"Frameworks exists but is not a directory."
-			}];
+			*error = [NSError errorWithDomain:@"ANGLEPatch" code:1 userInfo:@{ NSLocalizedDescriptionKey : @"Frameworks exists but is not a directory." }];
 		}
 		return NO;
 	}
 
-	NSArray<NSString*>* frameworks = @[
-		@"ANGLEGLKit.framework",
-		@"libEGL.framework",
-		@"libGLESv2.framework"
-	];
-
+	NSArray<NSString*>* frameworks = @[ @"ANGLEGLKit.framework", @"libEGL.framework", @"libGLESv2.framework" ];
 	for (NSString* framework in frameworks) {
-		NSString* src = GDBundledANGLEFrameworkSource(framework);
+		NSString* src = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:[@"Frameworks" stringByAppendingPathComponent:framework]];
 		NSString* dst = [frameworksPath stringByAppendingPathComponent:framework];
 
-		if (!src) {
+		if (![fm fileExistsAtPath:src]) {
 			if (error) {
-				*error = [NSError errorWithDomain:@"ANGLEPatch"
-				                             code:2
-				                         userInfo:@{
-					NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Missing bundled %@. Make sure Resources/GDFrameworks contains built framework binaries, not the ANGLEGLKit source zip.", framework]
-				}];
+				*error = [NSError errorWithDomain:@"ANGLEPatch" code:2 userInfo:@{ NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Missing bundled %@", framework] }];
 			}
 			return NO;
 		}
 
 		[fm removeItemAtPath:dst error:nil];
-
 		if (![fm copyItemAtPath:src toPath:dst error:error]) {
 			return NO;
 		}
-
-		AppLog(@"Copied %@ into Geometry Dash Frameworks from %@.", framework, src);
+		AppLog(@"Copied %@ into Geometry Dash Frameworks.", framework);
 	}
 
-	NSString* angleFrameworkPath = [frameworksPath stringByAppendingPathComponent:@"ANGLEGLKit.framework"];
-	NSString* angleBinary = GDFindMachOBinaryInFramework(angleFrameworkPath, @"ANGLEGLKit");
-
-	if (!angleBinary) {
-		if (error) {
-			*error = [NSError errorWithDomain:@"ANGLEPatch"
-			                             code:3
-			                         userInfo:@{
-				NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Copied ANGLEGLKit.framework does not contain a valid Mach-O binary at %@. You probably copied the ANGLEGLKit source/framework stubs instead of a built framework.", angleFrameworkPath]
-			}];
-		}
-		return NO;
-	}
-
-	AppLog(@"Found ANGLEGLKit Mach-O binary at %@", angleBinary);
-
+	NSString* angleBinary = [frameworksPath stringByAppendingPathComponent:@"ANGLEGLKit.framework/ANGLEGLKit"];
 	NSString* anglePatchError = LCParseMachO(angleBinary.UTF8String, false, ^(const char* path, struct mach_header_64* header, int fd, void* filePtr) {
 		LCPatchANGLEFrameworkSlice(path, header);
 	});
-
 	if (anglePatchError) {
 		if (error) {
-			*error = [NSError errorWithDomain:@"ANGLEPatch"
-			                             code:4
-			                         userInfo:@{
-				NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to patch ANGLEGLKit dependencies at %@: %@", angleBinary, anglePatchError]
-			}];
+			*error = [NSError errorWithDomain:@"ANGLEPatch" code:3 userInfo:@{ NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to patch ANGLEGLKit dependencies: %@", anglePatchError] }];
 		}
 		return NO;
 	}
-
-	AppLog(@"Patched ANGLEGLKit.framework dependencies at %@", angleBinary);
+	AppLog(@"Patched ANGLEGLKit.framework to load sibling libEGL/libGLESv2 with @loader_path.");
 
 	return YES;
 }
