@@ -24,6 +24,10 @@
 #include <stdlib.h>
 #include <sys/mman.h>
 
+#include <errno.h>
+#include <string.h>
+#include <unistd.h>
+
 // since theos sdk apparently doesnt have this
 // thanks to https://github.com/theos/theos/issues/493
 __attribute__((weak)) int __isOSVersionAtLeast(int major, int minor, int patch) {
@@ -365,8 +369,124 @@ void* new_dlsym(void* __handle, const char* __symbol) {
 // }
 
 
+static NSString* gANGLEFrameworksPath = nil;
+static BOOL gANGLEDlopenHookInstalled = NO;
+static void* (*orig_dlopen)(const char* __path, int __mode) = NULL;
+
+static void* ANGLECallOriginalDlopen(const char* path, int mode) {
+	if (orig_dlopen) {
+		return orig_dlopen(path, mode);
+	}
+
+	return dlopen(path, mode);
+}
+
+static BOOL ANGLECreateRuntimeSymlink(NSString* frameworksPath, NSString* aliasName, NSString* targetRelativePath) {
+	NSFileManager* fm = [NSFileManager defaultManager];
+
+	NSString* aliasPath = [frameworksPath stringByAppendingPathComponent:aliasName];
+	NSString* targetPath = [frameworksPath stringByAppendingPathComponent:targetRelativePath];
+
+	BOOL isDir = NO;
+	if (![fm fileExistsAtPath:targetPath isDirectory:&isDir] || isDir) {
+		AppLog(@"[invokeAppMain] ANGLE alias target is missing or invalid: %@", targetPath);
+		return NO;
+	}
+
+	[fm removeItemAtPath:aliasPath error:nil];
+
+	if (symlink(targetRelativePath.fileSystemRepresentation, aliasPath.fileSystemRepresentation) == 0) {
+		AppLog(@"[invokeAppMain] Created ANGLE alias %@ -> %@", aliasName, targetRelativePath);
+		return YES;
+	}
+
+	AppLog(@"[invokeAppMain] Failed to create ANGLE alias %@ -> %@: %s", aliasName, targetRelativePath, strerror(errno));
+	return NO;
+}
+
+static void ANGLEPrepareFrameworkLookup(NSString* frameworksPath) {
+	if (frameworksPath.length == 0) {
+		return;
+	}
+
+	ANGLECreateRuntimeSymlink(frameworksPath, @"libGLESv2", @"libGLESv2.framework/libGLESv2");
+	ANGLECreateRuntimeSymlink(frameworksPath, @"libGLESv2.dylib", @"libGLESv2.framework/libGLESv2");
+	ANGLECreateRuntimeSymlink(frameworksPath, @"libEGL", @"libEGL.framework/libEGL");
+	ANGLECreateRuntimeSymlink(frameworksPath, @"libEGL.dylib", @"libEGL.framework/libEGL");
+
+	setenv("DYLD_LIBRARY_PATH", frameworksPath.fileSystemRepresentation, 1);
+	setenv("DYLD_FALLBACK_LIBRARY_PATH", frameworksPath.fileSystemRepresentation, 1);
+	setenv("DYLD_FRAMEWORK_PATH", frameworksPath.fileSystemRepresentation, 1);
+	setenv("DYLD_FALLBACK_FRAMEWORK_PATH", frameworksPath.fileSystemRepresentation, 1);
+
+	AppLog(@"[invokeAppMain] Prepared ANGLE framework lookup path: %@", frameworksPath);
+}
+
+static NSString* ANGLERedirectDlopenPath(const char* path) {
+	if (!path || gANGLEFrameworksPath.length == 0) {
+		return nil;
+	}
+
+	if (
+		strcmp(path, "libGLESv2") == 0 ||
+		strcmp(path, "libGLESv2.dylib") == 0 ||
+		strcmp(path, "@rpath/libGLESv2.framework/libGLESv2") == 0 ||
+		strcmp(path, "libGLESv2.framework/libGLESv2") == 0
+	) {
+		return [gANGLEFrameworksPath stringByAppendingPathComponent:@"libGLESv2.framework/libGLESv2"];
+	}
+
+	if (
+		strcmp(path, "libEGL") == 0 ||
+		strcmp(path, "libEGL.dylib") == 0 ||
+		strcmp(path, "@rpath/libEGL.framework/libEGL") == 0 ||
+		strcmp(path, "libEGL.framework/libEGL") == 0
+	) {
+		return [gANGLEFrameworksPath stringByAppendingPathComponent:@"libEGL.framework/libEGL"];
+	}
+
+	return nil;
+}
+
+static void* ANGLEDlopenHook(const char* path, int mode) {
+	NSString* redirectedPath = ANGLERedirectDlopenPath(path);
+
+	if (redirectedPath.length > 0) {
+		void* handle = ANGLECallOriginalDlopen(redirectedPath.fileSystemRepresentation, mode | RTLD_GLOBAL);
+
+		if (handle) {
+			AppLog(@"[invokeAppMain] Redirected dlopen(%s) -> %@", path ? path : "(null)", redirectedPath);
+		} else {
+			const char* err = dlerror();
+			AppLog(@"[invokeAppMain] Failed redirected dlopen(%s) -> %@: %s", path ? path : "(null)", redirectedPath, err ? err : "unknown error");
+		}
+
+		return handle;
+	}
+
+	return ANGLECallOriginalDlopen(path, mode);
+}
+
+static void ANGLEInstallDlopenHook(void) {
+	if (gANGLEDlopenHookInstalled) {
+		return;
+	}
+
+	rebind_symbols((struct rebinding[1]){
+		{ "dlopen", (void*)ANGLEDlopenHook, (void**)&orig_dlopen }
+	}, 1);
+
+	gANGLEDlopenHookInstalled = YES;
+	AppLog(@"[invokeAppMain] Installed ANGLE dlopen redirect hook.");
+}
+
 static void preloadANGLEFrameworksFromBundle(NSString* bundlePath) {
 	NSString* frameworksPath = [bundlePath stringByAppendingPathComponent:@"Frameworks"];
+	gANGLEFrameworksPath = [frameworksPath copy];
+
+	ANGLEPrepareFrameworkLookup(frameworksPath);
+	ANGLEInstallDlopenHook();
+
 	NSArray<NSString*>* libs = @[
 		[frameworksPath stringByAppendingPathComponent:@"libGLESv2.framework/libGLESv2"],
 		[frameworksPath stringByAppendingPathComponent:@"libEGL.framework/libEGL"],
@@ -375,19 +495,31 @@ static void preloadANGLEFrameworksFromBundle(NSString* bundlePath) {
 
 	for (NSString* lib in libs) {
 		dlerror();
-		void* handle = dlopen(lib.UTF8String, RTLD_NOW | RTLD_GLOBAL);
+
+		void* handle = dlopen(lib.fileSystemRepresentation, RTLD_NOW | RTLD_GLOBAL);
 		const char* err = dlerror();
+
 		if (handle) {
-			AppLog(@"[invokeAppMain] Preloaded ANGLE framework: %@", lib.lastPathComponent);
+			AppLog(@"[invokeAppMain] Preloaded ANGLE framework: %@", lib);
 		} else {
 			AppLog(@"[invokeAppMain] Failed to preload ANGLE framework %@: %s", lib, err ? err : "unknown error");
 		}
 	}
 
 	dlerror();
+	void* bareGLES = dlopen("libGLESv2", RTLD_NOW | RTLD_GLOBAL);
+	const char* bareGLESErr = dlerror();
+	AppLog(@"[invokeAppMain] Bare libGLESv2 load result: %p%s%s", bareGLES, bareGLESErr ? " error=" : "", bareGLESErr ? bareGLESErr : "");
+
+	dlerror();
+	void* bareEGL = dlopen("libEGL", RTLD_NOW | RTLD_GLOBAL);
+	const char* bareEGLErr = dlerror();
+	AppLog(@"[invokeAppMain] Bare libEGL load result: %p%s%s", bareEGL, bareEGLErr ? " error=" : "", bareEGLErr ? bareEGLErr : "");
+
+	dlerror();
 	void* eglGetDisplayPtr = dlsym(RTLD_DEFAULT, "eglGetDisplay");
 	const char* eglErr = dlerror();
-	AppLog(@"[invokeAppMain] eglGetDisplay after preload: %p%s%s", eglGetDisplayPtr, eglErr ? " error=" : "", eglErr ? eglErr : "");
+	AppLog(@"[invokeAppMain] eglGetDisplay after ANGLE preload: %p%s%s", eglGetDisplayPtr, eglErr ? " error=" : "", eglErr ? eglErr : "");
 }
 
 static NSString* invokeAppMain(NSString* selectedApp, NSString* selectedContainer, BOOL safeMode, int argc, char* argv[]) {

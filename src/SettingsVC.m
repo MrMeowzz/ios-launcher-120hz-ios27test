@@ -22,6 +22,9 @@
 
 #import "Patcher.h"
 
+#include <errno.h>
+#include <unistd.h>
+
 extern NSString *lcAppUrlScheme;
 
 @implementation Setting
@@ -51,52 +54,170 @@ extern NSString *lcAppUrlScheme;
 
 @implementation SettingsVC
 
+- (NSString*)bundledANGLEFrameworkSourceForName:(NSString*)frameworkName {
+	NSFileManager* fm = [NSFileManager defaultManager];
+	NSString* bundlePath = NSBundle.mainBundle.bundlePath;
+
+	NSArray<NSString*>* basePaths = @[
+		[bundlePath stringByAppendingPathComponent:@"Frameworks"],
+		[bundlePath stringByAppendingPathComponent:@"Resources/GDFrameworks"],
+		[bundlePath stringByAppendingPathComponent:@"GDFrameworks"],
+	];
+
+	for (NSString* basePath in basePaths) {
+		NSString* candidate = [basePath stringByAppendingPathComponent:frameworkName];
+
+		BOOL isDir = NO;
+		if ([fm fileExistsAtPath:candidate isDirectory:&isDir] && isDir) {
+			return candidate;
+		}
+	}
+
+	return nil;
+}
+
+- (BOOL)createANGLEFlatAliasInFrameworksPath:(NSString*)frameworksPath aliasName:(NSString*)aliasName targetRelativePath:(NSString*)targetRelativePath error:(NSError**)error {
+	NSFileManager* fm = [NSFileManager defaultManager];
+
+	NSString* aliasPath = [frameworksPath stringByAppendingPathComponent:aliasName];
+	NSString* targetPath = [frameworksPath stringByAppendingPathComponent:targetRelativePath];
+
+	BOOL isDir = NO;
+	if (![fm fileExistsAtPath:targetPath isDirectory:&isDir] || isDir) {
+		if (error) {
+			*error = [NSError errorWithDomain:@"ANGLEPatch"
+			                             code:10
+			                         userInfo:@{
+				NSLocalizedDescriptionKey : [NSString stringWithFormat:@"ANGLE alias target is missing or invalid: %@", targetPath]
+			}];
+		}
+		return NO;
+	}
+
+	[fm removeItemAtPath:aliasPath error:nil];
+
+	if (symlink(targetRelativePath.fileSystemRepresentation, aliasPath.fileSystemRepresentation) == 0) {
+		AppLog(@"Created ANGLE flat alias %@ -> %@", aliasName, targetRelativePath);
+		return YES;
+	}
+
+	if (error) {
+		*error = [NSError errorWithDomain:@"ANGLEPatch"
+		                             code:11
+		                         userInfo:@{
+			NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to create ANGLE alias %@ -> %@: %s", aliasName, targetRelativePath, strerror(errno)]
+		}];
+	}
+
+	return NO;
+}
+
 - (BOOL)copyANGLEFrameworksIntoBundle:(NSURL*)bundlePath error:(NSError**)error {
 	NSFileManager* fm = [NSFileManager defaultManager];
 	NSString* frameworksPath = [bundlePath URLByAppendingPathComponent:@"Frameworks"].path;
-	BOOL isDir = NO;
 
+	BOOL isDir = NO;
 	if (![fm fileExistsAtPath:frameworksPath isDirectory:&isDir]) {
 		if (![fm createDirectoryAtPath:frameworksPath withIntermediateDirectories:YES attributes:nil error:error]) {
 			return NO;
 		}
 	} else if (!isDir) {
 		if (error) {
-			*error = [NSError errorWithDomain:@"ANGLEPatch" code:1 userInfo:@{ NSLocalizedDescriptionKey : @"Frameworks exists but is not a directory." }];
+			*error = [NSError errorWithDomain:@"ANGLEPatch"
+			                             code:1
+			                         userInfo:@{
+				NSLocalizedDescriptionKey : @"Frameworks exists but is not a directory."
+			}];
 		}
 		return NO;
 	}
 
-	NSArray<NSString*>* frameworks = @[ @"ANGLEGLKit.framework", @"libEGL.framework", @"libGLESv2.framework" ];
+	NSArray<NSString*>* frameworks = @[
+		@"ANGLEGLKit.framework",
+		@"libEGL.framework",
+		@"libGLESv2.framework"
+	];
+
 	for (NSString* framework in frameworks) {
-		NSString* src = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:[@"Frameworks" stringByAppendingPathComponent:framework]];
+		NSString* src = [self bundledANGLEFrameworkSourceForName:framework];
 		NSString* dst = [frameworksPath stringByAppendingPathComponent:framework];
 
-		if (![fm fileExistsAtPath:src]) {
+		if (!src) {
 			if (error) {
-				*error = [NSError errorWithDomain:@"ANGLEPatch" code:2 userInfo:@{ NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Missing bundled %@", framework] }];
+				*error = [NSError errorWithDomain:@"ANGLEPatch"
+				                             code:2
+				                         userInfo:@{
+					NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Missing bundled %@. The launcher must contain real built ANGLE frameworks, not .tbd stubs.", framework]
+				}];
 			}
 			return NO;
 		}
 
 		[fm removeItemAtPath:dst error:nil];
+
 		if (![fm copyItemAtPath:src toPath:dst error:error]) {
 			return NO;
 		}
-		AppLog(@"Copied %@ into Geometry Dash Frameworks.", framework);
+
+		AppLog(@"Copied %@ into Geometry Dash Frameworks from %@.", framework, src);
+	}
+
+	NSArray<NSString*>* requiredBinaries = @[
+		@"ANGLEGLKit.framework/ANGLEGLKit",
+		@"libEGL.framework/libEGL",
+		@"libGLESv2.framework/libGLESv2"
+	];
+
+	for (NSString* binaryRelativePath in requiredBinaries) {
+		NSString* binaryPath = [frameworksPath stringByAppendingPathComponent:binaryRelativePath];
+
+		BOOL binaryIsDir = NO;
+		if (![fm fileExistsAtPath:binaryPath isDirectory:&binaryIsDir] || binaryIsDir) {
+			if (error) {
+				*error = [NSError errorWithDomain:@"ANGLEPatch"
+				                             code:3
+				                         userInfo:@{
+					NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Copied ANGLE framework is missing real binary: %@", binaryPath]
+				}];
+			}
+			return NO;
+		}
 	}
 
 	NSString* angleBinary = [frameworksPath stringByAppendingPathComponent:@"ANGLEGLKit.framework/ANGLEGLKit"];
+
 	NSString* anglePatchError = LCParseMachO(angleBinary.UTF8String, false, ^(const char* path, struct mach_header_64* header, int fd, void* filePtr) {
 		LCPatchANGLEFrameworkSlice(path, header);
 	});
+
 	if (anglePatchError) {
 		if (error) {
-			*error = [NSError errorWithDomain:@"ANGLEPatch" code:3 userInfo:@{ NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to patch ANGLEGLKit dependencies: %@", anglePatchError] }];
+			*error = [NSError errorWithDomain:@"ANGLEPatch"
+			                             code:4
+			                         userInfo:@{
+				NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to patch ANGLEGLKit dependencies: %@", anglePatchError]
+			}];
 		}
 		return NO;
 	}
+
 	AppLog(@"Patched ANGLEGLKit.framework to load sibling libEGL/libGLESv2 with @loader_path.");
+
+	if (![self createANGLEFlatAliasInFrameworksPath:frameworksPath aliasName:@"libGLESv2" targetRelativePath:@"libGLESv2.framework/libGLESv2" error:error]) {
+		return NO;
+	}
+
+	if (![self createANGLEFlatAliasInFrameworksPath:frameworksPath aliasName:@"libGLESv2.dylib" targetRelativePath:@"libGLESv2.framework/libGLESv2" error:error]) {
+		return NO;
+	}
+
+	if (![self createANGLEFlatAliasInFrameworksPath:frameworksPath aliasName:@"libEGL" targetRelativePath:@"libEGL.framework/libEGL" error:error]) {
+		return NO;
+	}
+
+	if (![self createANGLEFlatAliasInFrameworksPath:frameworksPath aliasName:@"libEGL.dylib" targetRelativePath:@"libEGL.framework/libEGL" error:error]) {
+		return NO;
+	}
 
 	return YES;
 }
@@ -104,12 +225,23 @@ extern NSString *lcAppUrlScheme;
 - (void)removeANGLEFrameworksFromBundle:(NSURL*)bundlePath {
 	NSFileManager* fm = [NSFileManager defaultManager];
 	NSString* frameworksPath = [bundlePath URLByAppendingPathComponent:@"Frameworks"].path;
-	NSArray<NSString*>* frameworks = @[ @"ANGLEGLKit.framework", @"libEGL.framework", @"libGLESv2.framework" ];
-	for (NSString* framework in frameworks) {
-		NSString* path = [frameworksPath stringByAppendingPathComponent:framework];
+
+	NSArray<NSString*>* items = @[
+		@"ANGLEGLKit.framework",
+		@"libEGL.framework",
+		@"libGLESv2.framework",
+		@"libGLESv2",
+		@"libGLESv2.dylib",
+		@"libEGL",
+		@"libEGL.dylib"
+	];
+
+	for (NSString* item in items) {
+		NSString* path = [frameworksPath stringByAppendingPathComponent:item];
+
 		if ([fm fileExistsAtPath:path]) {
 			[fm removeItemAtPath:path error:nil];
-			AppLog(@"Removed %@ from Geometry Dash Frameworks.", framework);
+			AppLog(@"Removed ANGLE item from Geometry Dash Frameworks: %@", item);
 		}
 	}
 }
