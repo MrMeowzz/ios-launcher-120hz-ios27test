@@ -17,6 +17,9 @@
 // #import <Foundation/Foundation.h>
 // #import <mach-o/dyld.h>
 // #import <mach-o/loader.h>
+#include <errno.h>
+#import <libkern/OSByteOrder.h>
+#import <mach/machine.h>
 
 static void insertRPathCommand(const char* path, struct mach_header_64* header);
 
@@ -374,37 +377,148 @@ BOOL LCPatchLibWithANGLE(const char* path, struct mach_header_64* header, bool w
 }
 
 NSString* LCParseMachO(const char* path, bool readOnly, LCParseMachOCallback callback) {
-	int fd = open(path, readOnly ? O_RDONLY : O_RDWR, (mode_t)readOnly ? 0400 : 0600);
-	struct stat s;
-	fstat(fd, &s);
-	void* map = mmap(NULL, s.st_size, readOnly ? PROT_READ : (PROT_READ | PROT_WRITE), readOnly ? MAP_PRIVATE : MAP_SHARED, fd, 0);
-	if (map == MAP_FAILED) {
-		AppLog(@"LCParseMachO error: %@", [NSString stringWithFormat:@"Failed to map %s: %s", path, strerror(errno)]);
-		return [NSString stringWithFormat:@"Failed to map %s: %s", path, strerror(errno)];
+	int fd = open(path, readOnly ? O_RDONLY : O_RDWR);
+	if (fd < 0) {
+		NSString* message = [NSString stringWithFormat:@"Failed to open %s: %s", path, strerror(errno)];
+		AppLog(@"LCParseMachO error: %@", message);
+		return message;
 	}
 
+	struct stat s;
+	if (fstat(fd, &s) != 0) {
+		NSString* message = [NSString stringWithFormat:@"Failed to stat %s: %s", path, strerror(errno)];
+		AppLog(@"LCParseMachO error: %@", message);
+		close(fd);
+		return message;
+	}
+
+	if (s.st_size < sizeof(uint32_t)) {
+		NSString* message = [NSString stringWithFormat:@"File is too small to be Mach-O: %s", path];
+		AppLog(@"LCParseMachO error: %@", message);
+		close(fd);
+		return message;
+	}
+
+	void* map = mmap(NULL, s.st_size, readOnly ? PROT_READ : (PROT_READ | PROT_WRITE), readOnly ? MAP_PRIVATE : MAP_SHARED, fd, 0);
+	if (map == MAP_FAILED) {
+		NSString* message = [NSString stringWithFormat:@"Failed to map %s: %s", path, strerror(errno)];
+		AppLog(@"LCParseMachO error: %@", message);
+		close(fd);
+		return message;
+	}
+
+	uint8_t* bytes = (uint8_t*)map;
 	uint32_t magic = *(uint32_t*)map;
-	if (magic == FAT_CIGAM) {
-		// Find compatible slice
-		struct fat_header* header = (struct fat_header*)map;
-		struct fat_arch* arch = (struct fat_arch*)(map + sizeof(struct fat_header));
-		for (int i = 0; i < OSSwapInt32(header->nfat_arch); i++) {
-			if (OSSwapInt32(arch->cputype) == CPU_TYPE_ARM64) {
-				callback(path, (struct mach_header_64*)(map + OSSwapInt32(arch->offset)), fd, map);
+	BOOL handled = NO;
+
+	if (magic == FAT_MAGIC || magic == FAT_CIGAM) {
+		BOOL swap = magic == FAT_CIGAM;
+		struct fat_header* fat = (struct fat_header*)map;
+		uint32_t count = swap ? OSSwapInt32(fat->nfat_arch) : fat->nfat_arch;
+
+		if (sizeof(struct fat_header) + ((uint64_t)count * sizeof(struct fat_arch)) > (uint64_t)s.st_size) {
+			munmap(map, s.st_size);
+			close(fd);
+			return @"Fat Mach-O header is outside file bounds";
+		}
+
+		struct fat_arch* arch = (struct fat_arch*)((uint8_t*)map + sizeof(struct fat_header));
+
+		for (uint32_t i = 0; i < count; i++) {
+			cpu_type_t cpuType = swap ? OSSwapInt32(arch->cputype) : arch->cputype;
+			uint32_t offset = swap ? OSSwapInt32(arch->offset) : arch->offset;
+
+			if (cpuType == CPU_TYPE_ARM64) {
+				if ((uint64_t)offset + sizeof(struct mach_header_64) > (uint64_t)s.st_size) {
+					munmap(map, s.st_size);
+					close(fd);
+					return @"ARM64 slice offset is outside file";
+				}
+
+				struct mach_header_64* header = (struct mach_header_64*)((uint8_t*)map + offset);
+				if (header->magic != MH_MAGIC_64) {
+					munmap(map, s.st_size);
+					close(fd);
+					return @"ARM64 slice is not MH_MAGIC_64";
+				}
+
+				callback(path, header, fd, map);
+				handled = YES;
+				break;
 			}
-			arch = (struct fat_arch*)((void*)arch + sizeof(struct fat_arch));
+
+			arch = (struct fat_arch*)((uint8_t*)arch + sizeof(struct fat_arch));
+		}
+
+		if (!handled) {
+			munmap(map, s.st_size);
+			close(fd);
+			return @"No arm64 slice found in fat Mach-O";
+		}
+	} else if (magic == FAT_MAGIC_64 || magic == FAT_CIGAM_64) {
+		BOOL swap = magic == FAT_CIGAM_64;
+		struct fat_header* fat = (struct fat_header*)map;
+		uint32_t count = swap ? OSSwapInt32(fat->nfat_arch) : fat->nfat_arch;
+
+		if (sizeof(struct fat_header) + ((uint64_t)count * sizeof(struct fat_arch_64)) > (uint64_t)s.st_size) {
+			munmap(map, s.st_size);
+			close(fd);
+			return @"Fat64 Mach-O header is outside file bounds";
+		}
+
+		struct fat_arch_64* arch = (struct fat_arch_64*)((uint8_t*)map + sizeof(struct fat_header));
+
+		for (uint32_t i = 0; i < count; i++) {
+			cpu_type_t cpuType = swap ? OSSwapInt32(arch->cputype) : arch->cputype;
+			uint64_t offset = swap ? OSSwapInt64(arch->offset) : arch->offset;
+
+			if (cpuType == CPU_TYPE_ARM64) {
+				if (offset + sizeof(struct mach_header_64) > (uint64_t)s.st_size) {
+					munmap(map, s.st_size);
+					close(fd);
+					return @"ARM64 slice offset is outside file";
+				}
+
+				struct mach_header_64* header = (struct mach_header_64*)((uint8_t*)map + offset);
+				if (header->magic != MH_MAGIC_64) {
+					munmap(map, s.st_size);
+					close(fd);
+					return @"ARM64 slice is not MH_MAGIC_64";
+				}
+
+				callback(path, header, fd, map);
+				handled = YES;
+				break;
+			}
+
+			arch = (struct fat_arch_64*)((uint8_t*)arch + sizeof(struct fat_arch_64));
+		}
+
+		if (!handled) {
+			munmap(map, s.st_size);
+			close(fd);
+			return @"No arm64 slice found in fat64 Mach-O";
 		}
 	} else if (magic == MH_MAGIC_64) {
 		callback(path, (struct mach_header_64*)map, fd, map);
+		handled = YES;
 	} else if (magic == MH_MAGIC) {
+		munmap(map, s.st_size);
+		close(fd);
 		AppLog(@"LCParseMachO error: 32-bit app is not supported");
 		return @"32-bit app is not supported";
 	} else {
-		AppLog(@"LCParseMachO error: Not a Mach-O file");
-		return @"Not a Mach-O file";
+		NSString* message = [NSString stringWithFormat:@"Not a Mach-O file. First bytes: %02x %02x %02x %02x", bytes[0], bytes[1], bytes[2], bytes[3]];
+		AppLog(@"LCParseMachO error: %@", message);
+		munmap(map, s.st_size);
+		close(fd);
+		return message;
 	}
 
-	msync(map, s.st_size, MS_SYNC);
+	if (!readOnly) {
+		msync(map, s.st_size, MS_SYNC);
+	}
+
 	munmap(map, s.st_size);
 	close(fd);
 	return nil;
