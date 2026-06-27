@@ -39,7 +39,7 @@ ANGLEGLKit_FRAMEWORKS = \
 ANGLEGLKit_LDFLAGS = \
 	-FFrameworks \
 	-framework libEGL \
-	-Wl,-reexport_framework,libGLESv2 \
+	-Wl,-reexport_library,Frameworks/libGLESv2.framework/libGLESv2 \
 	-rpath @executable_path/Frameworks \
 	-rpath @loader_path/../
 

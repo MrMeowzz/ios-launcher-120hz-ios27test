@@ -607,7 +607,7 @@ for func in list:
 	}
 }
 + (void)patchGeode:(void (^)(BOOL success, NSString* error))completionHandler {
-	BOOL useANGLE = [[Utils getPrefs] boolForKey:@"USE_ANGLEGLKIT"];
+	BOOL useANGLE = [[Utils getPrefs] boolForKey:@"USE_MAX_FPS"];
 	if ([UIScreen mainScreen].maximumFramesPerSecond <= 60 && ![[Utils getPrefs] boolForKey:@"FORCE_ANGLE"]) {
 		AppLog(@"Skipping Geode / mod ANGLE patch because device doesn't support ProMotion.");
 		return completionHandler(YES, @"");
@@ -680,7 +680,7 @@ for func in list:
 	if (entitlements) {
 		NSString* execPath = to.path;
 		NSString* error = LCParseMachO(execPath.UTF8String, false, ^(const char* path, struct mach_header_64* header, int fd, void* filePtr) {
-			LCPatchExecSlice(path, header, true, [[Utils getPrefs] boolForKey:@"USE_ANGLEGLKIT"]);
+			LCPatchExecSlice(path, header, true, [[Utils getPrefs] boolForKey:@"USE_MAX_FPS"]);
 		});
 		if (error) {
 			return completionHandler(NO, error);
@@ -991,7 +991,7 @@ for func in list:
 	if (entitlements) {
 		NSString* execPath = to.path;
 		NSString* error = LCParseMachO(execPath.UTF8String, false, ^(const char* path, struct mach_header_64* header, int fd, void* filePtr) {
-			LCPatchExecSlice(path, header, true, [[Utils getPrefs] boolForKey:@"USE_ANGLEGLKIT"]);
+			LCPatchExecSlice(path, header, true, [[Utils getPrefs] boolForKey:@"USE_MAX_FPS"]);
 		});
 		if (error) {
 			return completionHandler(NO, error);

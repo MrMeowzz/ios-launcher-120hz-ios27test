@@ -28,13 +28,15 @@ static uint32_t rnd32(uint32_t v, uint32_t r) {
 static void insertDylibCommand(uint32_t cmd, const char* path, struct mach_header_64* header) {
 	const char* name = cmd == LC_ID_DYLIB ? basename((char*)path) : path;
 	struct dylib_command* dylib = (struct dylib_command*)(sizeof(struct mach_header_64) + (void*)header + header->sizeofcmds);
+	uint32_t cmdsize = sizeof(struct dylib_command) + rnd32((uint32_t)strlen(name) + 1, 8);
+	memset(dylib, 0, cmdsize);
 	dylib->cmd = cmd;
-	dylib->cmdsize = sizeof(struct dylib_command) + rnd32((uint32_t)strlen(name) + 1, 8);
+	dylib->cmdsize = cmdsize;
 	dylib->dylib.name.offset = sizeof(struct dylib_command);
 	dylib->dylib.compatibility_version = 0x10000;
 	dylib->dylib.current_version = 0x10000;
 	dylib->dylib.timestamp = 2;
-	strncpy((void*)dylib + dylib->dylib.name.offset, name, strlen(name));
+	memcpy((void*)dylib + dylib->dylib.name.offset, name, strlen(name));
 	header->ncmds++;
 	header->sizeofcmds += dylib->cmdsize;
 }
@@ -75,6 +77,30 @@ static BOOL replaceDylibPath(struct mach_header_64* header, const char* oldPath,
 		command = (struct load_command*)((uint8_t*)command + command->cmdsize);
 	}
 	return NO;
+}
+
+static BOOL hasDylibCommand(struct mach_header_64* header, uint32_t targetCmd, const char* path) {
+	uint8_t* imageHeaderPtr = (uint8_t*)header + sizeof(struct mach_header_64);
+	struct load_command* command = (struct load_command*)imageHeaderPtr;
+	for (uint32_t i = 0; i < header->ncmds; i++) {
+		if (command->cmd == targetCmd) {
+			struct dylib_command* dylib = (struct dylib_command*)command;
+			char* dylibName = (char*)dylib + dylib->dylib.name.offset;
+			if (strcmp(dylibName, path) == 0) {
+				return YES;
+			}
+		}
+		command = (struct load_command*)((uint8_t*)command + command->cmdsize);
+	}
+	return NO;
+}
+
+static BOOL ensureDylibCommand(uint32_t cmd, const char* path, struct mach_header_64* header) {
+	if (hasDylibCommand(header, cmd, path)) {
+		return NO;
+	}
+	insertDylibCommand(cmd, path, header);
+	return YES;
 }
 
 static BOOL hasRPathCommand(struct mach_header_64* header, const char* path) {
@@ -296,6 +322,11 @@ BOOL LCPatchANGLEFrameworkSlice(const char* path, struct mach_header_64* header)
 	// ANGLEGLKit always finds its sibling frameworks inside GD.app/Frameworks.
 	patched |= replaceDylibPath(header, "@rpath/libEGL.framework/libEGL", "@loader_path/../libEGL.framework/libEGL");
 	patched |= replaceDylibPath(header, "@rpath/libGLESv2.framework/libGLESv2", "@loader_path/../libGLESv2.framework/libGLESv2");
+
+	if (ensureDylibCommand(LC_REEXPORT_DYLIB, "@loader_path/../libGLESv2.framework/libGLESv2", header)) {
+		patched = YES;
+		AppLog(@"Added ANGLEGLKit libGLESv2 re-export.");
+	}
 
 	// Make the install name sane too. This is mostly for tools/debugging, but it
 	// also helps dyld avoid stale /Library/Frameworks identities.
