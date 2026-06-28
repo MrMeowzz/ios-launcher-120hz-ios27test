@@ -1851,6 +1851,18 @@ extern NSString *lcAppUrlScheme;
 				return;
 			}
 
+			if ([[Utils getPrefs] boolForKey:@"JITLESS"]) {
+				[[Utils getPrefs] setBool:NO forKey:@"USE_MAX_FPS"];
+				[sender setOn:NO animated:YES];
+
+				[Utils showError:self
+						title:@"ANGLEGLKit 120Hz does not work in JIT-Less mode. Turn off JIT-Less and launch with LiveContainer JIT before enabling 120Hz."
+						error:nil];
+
+				[self.tableView reloadData];
+				return;
+			}
+
 			UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Warning" message:@"Enabling this option is experimental, as it changes the rendering engine Geometry Dash, Geode, and installed mods use to support the maximum refresh rate. Some mods may have graphical issues with ANGLEGLKit. Only enable this if you are okay with possible rendering differences.\n\nWould you like to enable anyways? You can always disable it later.".loc preferredStyle:UIAlertControllerStyleAlert];
 
 			UIAlertAction* okAction = [UIAlertAction actionWithTitle:@"Enable" style:UIAlertActionStyleDestructive handler:^(UIAlertAction* _Nonnull action) {
