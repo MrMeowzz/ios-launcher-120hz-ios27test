@@ -103,6 +103,47 @@ static BOOL ensureDylibCommand(uint32_t cmd, const char* path, struct mach_heade
 	return YES;
 }
 
+static BOOL patchANGLEMissingEGLPlatformDisplayCall(struct mach_header_64* header) {
+	const uint64_t targetVMAddr = 0x4be0;
+	const uint32_t oldInstruction = 0x9400151a; // bl _eglGetPlatformDisplay
+	const uint32_t newInstruction = 0xd2800000; // mov x0, #0
+
+	uint8_t* commandPtr = (uint8_t*)header + sizeof(struct mach_header_64);
+	struct load_command* command = (struct load_command*)commandPtr;
+	for (uint32_t i = 0; i < header->ncmds; i++) {
+		if (command->cmd == LC_SEGMENT_64) {
+			struct segment_command_64* segment = (struct segment_command_64*)command;
+			if (
+				targetVMAddr >= segment->vmaddr &&
+				targetVMAddr + sizeof(uint32_t) <= segment->vmaddr + segment->vmsize
+			) {
+				uint64_t fileOffset = segment->fileoff + (targetVMAddr - segment->vmaddr);
+				if (fileOffset + sizeof(uint32_t) > segment->fileoff + segment->filesize) {
+					return NO;
+				}
+
+				uint32_t* instruction = (uint32_t*)((uint8_t*)header + fileOffset);
+				if (*instruction == newInstruction) {
+					return NO;
+				}
+
+				if (*instruction != oldInstruction) {
+					AppLog(@"ANGLEGLKit missing eglGetPlatformDisplay patch skipped; unexpected instruction 0x%08x.", *instruction);
+					return NO;
+				}
+
+				*instruction = newInstruction;
+				AppLog(@"Patched ANGLEGLKit missing eglGetPlatformDisplay crash guard.");
+				return YES;
+			}
+		}
+
+		command = (struct load_command*)((uint8_t*)command + command->cmdsize);
+	}
+
+	return NO;
+}
+
 static BOOL hasRPathCommand(struct mach_header_64* header, const char* path) {
 	uint8_t* imageHeaderPtr = (uint8_t*)header + sizeof(struct mach_header_64);
 	struct load_command* command = (struct load_command*)imageHeaderPtr;
@@ -315,6 +356,8 @@ int LCPatchExecSlice(const char* path, struct mach_header_64* header, bool withG
 BOOL LCPatchANGLEFrameworkSlice(const char* path, struct mach_header_64* header) {
 	AppLog(@"Patching ANGLEGLKit framework dependencies: %@", [NSString stringWithUTF8String:path]);
 	BOOL patched = NO;
+
+	patched |= patchANGLEMissingEGLPlatformDisplayCall(header);
 
 	// The public ANGLEGLKit build depends on @rpath/libEGL and @rpath/libGLESv2.
 	// In LiveContainer, @executable_path can point at the LC host instead of GD, so
