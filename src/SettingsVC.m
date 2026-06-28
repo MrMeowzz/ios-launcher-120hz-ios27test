@@ -1721,11 +1721,61 @@ extern NSString *lcAppUrlScheme;
 		break;
 	case 9: {
 		[Utils toggleKey:@"JITLESS"];
+
+		NSFileManager* fm = [NSFileManager defaultManager];
+		NSURL* bundlePath = [[LCPath bundlePath] URLByAppendingPathComponent:[Utils gdBundleName]];
+
 		if ([sender isOn]) {
+			// JIT-Less and ANGLEGLKit should not be active together.
+			// Force-disable 120Hz/ANGLE when enabling JIT-Less.
 			[[Utils getPrefs] setBool:NO forKey:@"MANUAL_REOPEN"];
+			[[Utils getPrefs] setBool:NO forKey:@"USE_MAX_FPS"];
+			[[Utils getPrefs] setObject:@"NO" forKey:@"PATCH_CHECKSUM"];
+
+			NSString* restoreErrorString = nil;
+			if (![self restoreGeometryJumpToOpenGLESWithBundle:bundlePath errorString:&restoreErrorString]) {
+				AppLog(@"Could not restore GeometryJump while enabling JIT-Less: %@", restoreErrorString);
+				[Utils showError:self title:restoreErrorString ?: @"Could not restore Geometry Dash to OpenGLES while enabling JIT-Less." error:nil];
+			} else {
+				AppLog(@"Restored GeometryJump to OpenGLES because JIT-Less was enabled.");
+			}
+
+			[self removeANGLEFrameworksFromBundle:bundlePath];
+
+			NSString* infoPath = [bundlePath URLByAppendingPathComponent:@"Info.plist"].path;
+			NSMutableDictionary* infoDict = [NSMutableDictionary dictionaryWithContentsOfFile:infoPath];
+
+			if (infoDict) {
+				[infoDict removeObjectForKey:@"CADisableMinimumFrameDuration"];
+				[infoDict removeObjectForKey:@"CADisableMinimumFrameDurationOnPhone"];
+
+				if ([infoDict writeToFile:infoPath atomically:YES]) {
+					AppLog(@"Removed ProMotion Info.plist keys because JIT-Less was enabled.");
+				}
+			}
+
+			NSString* caHighFPSPath = [bundlePath URLByAppendingPathComponent:@"CAHighFPS.dylib"].path;
+			if ([fm fileExistsAtPath:caHighFPSPath]) {
+				[fm removeItemAtPath:caHighFPSPath error:nil];
+				AppLog(@"Removed CAHighFPS.dylib because JIT-Less was enabled.");
+			}
+
+			[Patcher patchGeode:^(BOOL success, NSString *error) {
+				AppLog(@"Restored Geode/mods OpenGLES state after enabling JIT-Less (Success: %@, Error: %@)", success ? @"YES" : @"NO", error);
+
+				[self signANGLEPatchedContentWithCompletion:^(BOOL signSuccess, NSString* signError) {
+					if (!signSuccess) {
+						AppLog(@"Failed signing restored JIT-Less content: %@", signError);
+					} else {
+						AppLog(@"Signed restored JIT-Less content.");
+					}
+
+					[self.tableView reloadData];
+				}];
+			}];
+
+			[Utils showNotice:self title:@"JIT-Less enabled. 120Hz ANGLEGLKit was disabled and Geometry Dash was restored to OpenGLES."];
 		} else {
-			NSFileManager* fm = [NSFileManager defaultManager];
-			NSURL* bundlePath = [[LCPath bundlePath] URLByAppendingPathComponent:[Utils gdBundleName]];
 			if (![fm fileExistsAtPath:[bundlePath URLByAppendingPathComponent:@"GeometryOriginal"].path]) {
 				AppLog(@"Not restoring binary.");
 			} else {
@@ -1744,6 +1794,7 @@ extern NSString *lcAppUrlScheme;
 				}
 			}
 		}
+
 		[self.tableView reloadData];
 		break;
 	}
