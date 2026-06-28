@@ -1861,8 +1861,6 @@ extern NSString *lcAppUrlScheme;
 					[self.tableView reloadData];
 				}];
 			}];
-
-			[Utils showNotice:self title:@"JIT-Less enabled. 120Hz ANGLEGLKit was disabled and Geometry Dash was restored to OpenGLES."];
 		} else {
 			if (![fm fileExistsAtPath:[bundlePath URLByAppendingPathComponent:@"GeometryOriginal"].path]) {
 				AppLog(@"Not restoring binary.");
