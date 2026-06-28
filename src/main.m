@@ -694,6 +694,12 @@ static NSString* invokeAppMain(NSString* selectedApp, NSString* selectedContaine
 			} else {
 				AppLog(@"[invokeAppMain] Failed to load CAHighFPS.dylib: %s", fpsError ? fpsError : "unknown error");
 			}
+		} else {
+			unsetenv("ANGLEGLKit");
+			if ([fm fileExistsAtPath:caHighFPSPath]) {
+				remove(caHighFPSPath.UTF8String);
+				AppLog(@"[invokeAppMain] Removed stale CAHighFPS.dylib because USE_MAX_FPS is disabled.");
+			}
 		}
 	} else {
 		AppLog(@"[invokeAppMain] Couldn't find tweak folder!");

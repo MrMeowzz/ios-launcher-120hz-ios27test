@@ -247,21 +247,27 @@ extern NSString *lcAppUrlScheme;
 	}
 }
 
+- (void)finishANGLESigningWithCompletion:(void (^)(BOOL success, NSString* error))completion success:(BOOL)success error:(NSString*)error {
+	dispatch_async(dispatch_get_main_queue(), ^{
+		completion(success, error);
+	});
+}
+
 - (void)signANGLEPatchedContentWithCompletion:(void (^)(BOOL success, NSString* error))completion {
 	if (![LCUtils certificateData] || ![LCUtils certificatePassword]) {
 		AppLog(@"Skipping ANGLE signing because no certificate is available.");
-		completion(YES, nil);
+		[self finishANGLESigningWithCompletion:completion success:YES error:nil];
 		return;
 	}
 
 	[LCUtils validateCertificate:^(int status, NSDate* expirationDate, NSString* errorC) {
 		if (errorC) {
-			completion(NO, [NSString stringWithFormat:@"launcher.error.sign.invalidcert".loc, errorC]);
+			[self finishANGLESigningWithCompletion:completion success:NO error:[NSString stringWithFormat:@"launcher.error.sign.invalidcert".loc, errorC]];
 			return;
 		}
 
 		if (status != 0) {
-			completion(NO, @"launcher.error.sign.invalidcert2".loc);
+			[self finishANGLESigningWithCompletion:completion success:NO error:@"launcher.error.sign.invalidcert2".loc];
 			return;
 		}
 
@@ -269,7 +275,7 @@ extern NSString *lcAppUrlScheme;
 		LCAppInfo* app = [[LCAppInfo alloc] initWithBundlePath:bundlePath.path];
 		[app patchExecAndSignIfNeedWithCompletionHandler:^(bool appSignSuccess, NSString* appSignError) {
 			if (appSignError) {
-				completion(NO, appSignError);
+				[self finishANGLESigningWithCompletion:completion success:NO error:appSignError];
 				return;
 			}
 
@@ -277,7 +283,7 @@ extern NSString *lcAppUrlScheme;
 			} completion:^(NSError* tweakSignError) {
 				if (tweakSignError) {
 					AppLog(@"Detailed error signing tweaks after ANGLE patch: %@", tweakSignError);
-					completion(NO, @"Couldn't sign tweaks after patching ANGLEGLKit. Please refresh/import your certificate in settings.");
+					[self finishANGLESigningWithCompletion:completion success:NO error:@"Couldn't sign tweaks after patching ANGLEGLKit. Please refresh/import your certificate in settings."];
 					return;
 				}
 
@@ -286,7 +292,7 @@ extern NSString *lcAppUrlScheme;
 				} completion:^(NSError* modSignError) {
 					if (modSignError) {
 						AppLog(@"Detailed error signing modern mods after ANGLE patch: %@", modSignError);
-						completion(NO, @"Couldn't sign mods after patching ANGLEGLKit. Please refresh/import your certificate in settings.");
+						[self finishANGLESigningWithCompletion:completion success:NO error:@"Couldn't sign mods after patching ANGLEGLKit. Please refresh/import your certificate in settings."];
 						return;
 					}
 
@@ -294,11 +300,11 @@ extern NSString *lcAppUrlScheme;
 					} completion:^(NSError* legacyModSignError) {
 						if (legacyModSignError) {
 							AppLog(@"Detailed error signing legacy mods after ANGLE patch: %@", legacyModSignError);
-							completion(NO, @"Couldn't sign mods after patching ANGLEGLKit. Please refresh/import your certificate in settings.");
+							[self finishANGLESigningWithCompletion:completion success:NO error:@"Couldn't sign mods after patching ANGLEGLKit. Please refresh/import your certificate in settings."];
 							return;
 						}
 
-						completion(YES, nil);
+						[self finishANGLESigningWithCompletion:completion success:YES error:nil];
 					}];
 				}];
 			}];
