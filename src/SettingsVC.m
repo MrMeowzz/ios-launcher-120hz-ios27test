@@ -55,23 +55,111 @@ extern NSString *lcAppUrlScheme;
 
 @implementation SettingsVC
 
+- (NSString*)binaryNameForANGLEFrameworkName:(NSString*)frameworkName {
+	if ([frameworkName isEqualToString:@"ANGLEGLKit.framework"]) {
+		return @"ANGLEGLKit";
+	}
+
+	if ([frameworkName isEqualToString:@"libEGL.framework"]) {
+		return @"libEGL";
+	}
+
+	if ([frameworkName isEqualToString:@"libGLESv2.framework"]) {
+		return @"libGLESv2";
+	}
+
+	return frameworkName.stringByDeletingPathExtension;
+}
+
+- (BOOL)angleFrameworkAtPathLooksValid:(NSString*)frameworkPath frameworkName:(NSString*)frameworkName errorString:(NSString**)errorString {
+	NSFileManager* fm = [NSFileManager defaultManager];
+
+	BOOL isDir = NO;
+	if (![fm fileExistsAtPath:frameworkPath isDirectory:&isDir] || !isDir) {
+		if (errorString) {
+			*errorString = [NSString stringWithFormat:@"Framework folder missing: %@", frameworkPath];
+		}
+		return NO;
+	}
+
+	NSString* binaryName = [self binaryNameForANGLEFrameworkName:frameworkName];
+	NSString* binaryPath = [frameworkPath stringByAppendingPathComponent:binaryName];
+
+	BOOL binaryIsDir = NO;
+	if (![fm fileExistsAtPath:binaryPath isDirectory:&binaryIsDir] || binaryIsDir) {
+		if (errorString) {
+			*errorString = [NSString stringWithFormat:@"Framework binary missing: %@", binaryPath];
+		}
+		return NO;
+	}
+
+	NSFileHandle* handle = [NSFileHandle fileHandleForReadingAtPath:binaryPath];
+	if (!handle) {
+		if (errorString) {
+			*errorString = [NSString stringWithFormat:@"Could not open framework binary: %@", binaryPath];
+		}
+		return NO;
+	}
+
+	NSData* magicData = [handle readDataOfLength:4];
+	[handle closeFile];
+
+	if (magicData.length < 4) {
+		if (errorString) {
+			*errorString = [NSString stringWithFormat:@"Framework binary too small: %@", binaryPath];
+		}
+		return NO;
+	}
+
+	const unsigned char* bytes = magicData.bytes;
+
+	BOOL isMachO =
+		(bytes[0] == 0xcf && bytes[1] == 0xfa && bytes[2] == 0xed && bytes[3] == 0xfe) || // Mach-O 64 little endian
+		(bytes[0] == 0xce && bytes[1] == 0xfa && bytes[2] == 0xed && bytes[3] == 0xfe) || // Mach-O 32 little endian
+		(bytes[0] == 0xfe && bytes[1] == 0xed && bytes[2] == 0xfa && bytes[3] == 0xcf) || // Mach-O 64 big endian
+		(bytes[0] == 0xfe && bytes[1] == 0xed && bytes[2] == 0xfa && bytes[3] == 0xce) || // Mach-O 32 big endian
+		(bytes[0] == 0xca && bytes[1] == 0xfe && bytes[2] == 0xba && bytes[3] == 0xbe) || // Fat
+		(bytes[0] == 0xca && bytes[1] == 0xfe && bytes[2] == 0xba && bytes[3] == 0xbf);   // Fat64
+
+	if (!isMachO) {
+		if (errorString) {
+			*errorString = [NSString stringWithFormat:@"Framework binary is not Mach-O: %@ first bytes %02x %02x %02x %02x", binaryPath, bytes[0], bytes[1], bytes[2], bytes[3]];
+		}
+		return NO;
+	}
+
+	return YES;
+}
+
 - (NSString*)bundledANGLEFrameworkSourceForName:(NSString*)frameworkName {
 	NSFileManager* fm = [NSFileManager defaultManager];
 	NSString* bundlePath = NSBundle.mainBundle.bundlePath;
 
+	// IMPORTANT:
+	// Prefer Resources/GDFrameworks first because this is where the custom rebuilt ANGLE frameworks should live.
+	// The app wrapper's Frameworks folder can contain an older packaged ANGLEGLKit.framework, which caused the +0x824c crash to come back.
 	NSArray<NSString*>* basePaths = @[
-		[bundlePath stringByAppendingPathComponent:@"Frameworks"],
 		[bundlePath stringByAppendingPathComponent:@"Resources/GDFrameworks"],
 		[bundlePath stringByAppendingPathComponent:@"GDFrameworks"],
+		[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"GDFrameworks"],
+		[bundlePath stringByAppendingPathComponent:@"Frameworks"]
 	];
 
 	for (NSString* basePath in basePaths) {
 		NSString* candidate = [basePath stringByAppendingPathComponent:frameworkName];
 
 		BOOL isDir = NO;
-		if ([fm fileExistsAtPath:candidate isDirectory:&isDir] && isDir) {
+		if (![fm fileExistsAtPath:candidate isDirectory:&isDir] || !isDir) {
+			continue;
+		}
+
+		NSString* validationError = nil;
+		if ([self angleFrameworkAtPathLooksValid:candidate frameworkName:frameworkName errorString:&validationError]) {
+			AppLog(@"Using bundled ANGLE framework source for %@: %@", frameworkName, candidate);
 			return candidate;
 		}
+
+		AppLog(@"Skipping invalid ANGLE framework source for %@ at %@: %@", frameworkName, candidate, validationError);
 	}
 
 	return nil;
