@@ -1226,61 +1226,20 @@ extern NSString *lcAppUrlScheme;
 		} visible:^BOOL() {
 			return [Utils isSandboxed] && ![[Utils getPrefs] integerForKey:@"ENTERPRISE_MODE"];
 		} prefsKey:nil switchTag:0 action:^{
-			+ (BOOL)binaryAtPathContainsString:(NSString*)path string:(NSString*)needle {
-				NSData* data = [NSData dataWithContentsOfFile:path];
-				if (!data || data.length == 0 || needle.length == 0) {
-					return NO;
-				}
+			[_root.launchButton setEnabled:NO];
 
-				NSData* needleData = [needle dataUsingEncoding:NSUTF8StringEncoding];
-				if (!needleData || needleData.length == 0 || needleData.length > data.length) {
-					return NO;
-				}
+			[_root signAppWithSafeMode:^(BOOL success, NSString* error) {
+				dispatch_async(dispatch_get_main_queue(), ^{
+					[_root.launchButton setEnabled:YES];
 
-				NSRange foundRange = [data rangeOfData:needleData options:0 range:NSMakeRange(0, data.length)];
-				return foundRange.location != NSNotFound;
-			}
-
-			+ (void)copyOrigBinary:(void (^)(BOOL success, NSString* error))completionHandler {
-				if (![Utils isSandboxed]) {
-					return completionHandler(NO, @"Not sandboxed");
-				}
-
-				NSURL* bundlePath = [[LCPath bundlePath] URLByAppendingPathComponent:[Utils gdBundleName]];
-				NSURL* originalURL = [bundlePath URLByAppendingPathComponent:@"GeometryOriginal"];
-				NSURL* currentURL = [bundlePath URLByAppendingPathComponent:@"GeometryJump"];
-
-				NSFileManager* fm = [NSFileManager defaultManager];
-
-				if (![fm fileExistsAtPath:currentURL.path]) {
-					return completionHandler(NO, @"GeometryJump is missing.");
-				}
-
-				if (![fm fileExistsAtPath:originalURL.path]) {
-					BOOL currentIsANGLEPatched = [Utils binaryAtPathContainsString:currentURL.path string:@"ANGLEGLKit.framework/ANGLEGLKit"];
-
-					if (currentIsANGLEPatched) {
-						return completionHandler(NO, @"GeometryOriginal is missing, but GeometryJump is already ANGLE-patched. Reimport a clean Geometry Dash IPA so the launcher can create a clean OpenGLES backup.");
+					if (!success) {
+						[Utils showError:self title:error ?: @"Force resign failed." error:nil];
+						return;
 					}
 
-					NSError* error = nil;
-					[fm copyItemAtURL:currentURL toURL:originalURL error:&error];
-
-					if (error) {
-						return completionHandler(NO, [NSString stringWithFormat:@"Couldn't copy original binary: %@", error.localizedDescription]);
-					}
-
-					AppLog(@"Created clean GeometryOriginal backup.");
-				}
-
-				BOOL originalIsANGLEPatched = [Utils binaryAtPathContainsString:originalURL.path string:@"ANGLEGLKit.framework/ANGLEGLKit"];
-
-				if (originalIsANGLEPatched) {
-					return completionHandler(NO, @"GeometryOriginal is already ANGLE-patched. Reimport a clean Geometry Dash IPA because the backup is contaminated.");
-				}
-
-				return completionHandler(YES, @"Success");
-			}
+					[Utils showNotice:self title:@"Force resign complete."];
+				});
+			}];
 		} custom:nil],
 		[Setting create:@"Allow Importing Cert".loc type:SettingTypeToggle disabled:nil visible:^BOOL() {
 			return [Utils isSandboxed] && ![[Utils getPrefs] integerForKey:@"ENTERPRISE_MODE"];

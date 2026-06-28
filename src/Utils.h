@@ -50,6 +50,7 @@
 + (NSData*)decryptData:(NSData*)data withKey:(NSString*)key;
 // completionHandler:(void (^)(BOOL success, NSString* error))completionHandler;
 + (void)bundleIPA:(UIViewController*)root;
++ (BOOL)binaryAtPathContainsString:(NSString*)path string:(NSString*)needle;
 + (void)copyOrigBinary:(void (^)(BOOL success, NSString* error))completionHandler;
 
 + (void)decompress:(NSString*)fileToExtract extractionPath:(NSString*)extractionPath completion:(void (^)(int))completion;

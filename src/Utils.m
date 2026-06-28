@@ -692,16 +692,8 @@ extern SecTaskRef SecTaskCreateFromSelf(CFAllocatorRef allocator) __attribute__(
 		return NO;
 	}
 
-	const uint8_t* bytes = data.bytes;
-	const uint8_t* needleBytes = needleData.bytes;
-
-	for (NSUInteger i = 0; i + needleData.length <= data.length; i++) {
-		if (memcmp(bytes + i, needleBytes, needleData.length) == 0) {
-			return YES;
-		}
-	}
-
-	return NO;
+	NSRange foundRange = [data rangeOfData:needleData options:0 range:NSMakeRange(0, data.length)];
+	return foundRange.location != NSNotFound;
 }
 
 + (void)copyOrigBinary:(void (^)(BOOL success, NSString* error))completionHandler {
@@ -723,7 +715,7 @@ extern SecTaskRef SecTaskCreateFromSelf(CFAllocatorRef allocator) __attribute__(
 		BOOL currentIsANGLEPatched = [Utils binaryAtPathContainsString:currentURL.path string:@"ANGLEGLKit.framework/ANGLEGLKit"];
 
 		if (currentIsANGLEPatched) {
-			return completionHandler(NO, @"GeometryOriginal is missing, but GeometryJump is already ANGLE-patched. Reimport a clean Geometry Dash IPA so the launcher can create a clean backup.");
+			return completionHandler(NO, @"GeometryOriginal is missing, but GeometryJump is already ANGLE-patched. Reimport a clean Geometry Dash IPA so the launcher can create a clean OpenGLES backup.");
 		}
 
 		NSError* error = nil;
