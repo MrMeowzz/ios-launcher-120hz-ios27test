@@ -8,6 +8,7 @@
 #import "components/FileBrowserVC.h"
 #import "components/LogUtils.h"
 #import "src/JITLessVC.h"
+#import "src/LCUtils/LCAppInfo.h"
 #import "src/LCUtils/LCUtils.h"
 #import "src/LCUtils/Shared.h"
 #import "src/LCUtils/utils.h"
@@ -244,6 +245,66 @@ extern NSString *lcAppUrlScheme;
 			AppLog(@"Removed ANGLE item from Geometry Dash Frameworks: %@", item);
 		}
 	}
+}
+
+- (void)signANGLEPatchedContentWithCompletion:(void (^)(BOOL success, NSString* error))completion {
+	if (![LCUtils certificateData] || ![LCUtils certificatePassword]) {
+		AppLog(@"Skipping ANGLE signing because no certificate is available.");
+		completion(YES, nil);
+		return;
+	}
+
+	[LCUtils validateCertificate:^(int status, NSDate* expirationDate, NSString* errorC) {
+		if (errorC) {
+			completion(NO, [NSString stringWithFormat:@"launcher.error.sign.invalidcert".loc, errorC]);
+			return;
+		}
+
+		if (status != 0) {
+			completion(NO, @"launcher.error.sign.invalidcert2".loc);
+			return;
+		}
+
+		NSURL* bundlePath = [[LCPath bundlePath] URLByAppendingPathComponent:[Utils gdBundleName]];
+		LCAppInfo* app = [[LCAppInfo alloc] initWithBundlePath:bundlePath.path];
+		[app patchExecAndSignIfNeedWithCompletionHandler:^(bool appSignSuccess, NSString* appSignError) {
+			if (appSignError) {
+				completion(NO, appSignError);
+				return;
+			}
+
+			[LCUtils signTweaks:[LCPath tweakPath] force:YES progressHandler:^(NSProgress* progress) {
+			} completion:^(NSError* tweakSignError) {
+				if (tweakSignError) {
+					AppLog(@"Detailed error signing tweaks after ANGLE patch: %@", tweakSignError);
+					completion(NO, @"Couldn't sign tweaks after patching ANGLEGLKit. Please refresh/import your certificate in settings.");
+					return;
+				}
+
+				NSURL* geodePath = [[LCPath dataPath] URLByAppendingPathComponent:@"game/geode"];
+				[LCUtils signModsNew:geodePath force:YES progressHandler:^(NSProgress* progress) {
+				} completion:^(NSError* modSignError) {
+					if (modSignError) {
+						AppLog(@"Detailed error signing modern mods after ANGLE patch: %@", modSignError);
+						completion(NO, @"Couldn't sign mods after patching ANGLEGLKit. Please refresh/import your certificate in settings.");
+						return;
+					}
+
+					[LCUtils signMods:geodePath force:YES progressHandler:^(NSProgress* progress) {
+					} completion:^(NSError* legacyModSignError) {
+						if (legacyModSignError) {
+							AppLog(@"Detailed error signing legacy mods after ANGLE patch: %@", legacyModSignError);
+							completion(NO, @"Couldn't sign mods after patching ANGLEGLKit. Please refresh/import your certificate in settings.");
+							return;
+						}
+
+						completion(YES, nil);
+					}];
+				}];
+			}];
+		} progressHandler:^(NSProgress* signProgress) {
+		} forceSign:YES blockMainThread:YES];
+	}];
 }
 
 - (void)viewDidLoad {
@@ -1784,8 +1845,17 @@ extern NSString *lcAppUrlScheme;
 						AppLog(@"Patched Geode/mods for ANGLEGLKit (Success: %@, Error: %@)", success ? @"YES" : @"NO", error);
 						if (!success) {
 							[Utils showError:self title:[NSString stringWithFormat:@"Failed to patch Geode/mods: %@", error ?: @"Unknown error"] error:nil];
+							[self.tableView reloadData];
+							return;
 						}
-						[self.tableView reloadData];
+						[self signANGLEPatchedContentWithCompletion:^(BOOL signSuccess, NSString* signError) {
+							if (!signSuccess) {
+								[Utils showError:self title:signError ?: @"Couldn't sign ANGLE-patched files." error:nil];
+							} else {
+								AppLog(@"Signed ANGLE-patched Geode/mod files.");
+							}
+							[self.tableView reloadData];
+						}];
 					}];
 				}];
 			}];
@@ -1822,7 +1892,19 @@ extern NSString *lcAppUrlScheme;
 
 			[Patcher patchGeode:^(BOOL success, NSString *error) {
 				AppLog(@"Restored Geode/mods OpenGLES state (Success: %@, Error: %@)", success ? @"YES" : @"NO", error);
-				[self.tableView reloadData];
+				if (!success) {
+					[Utils showError:self title:[NSString stringWithFormat:@"Failed to restore Geode/mods: %@", error ?: @"Unknown error"] error:nil];
+					[self.tableView reloadData];
+					return;
+				}
+				[self signANGLEPatchedContentWithCompletion:^(BOOL signSuccess, NSString* signError) {
+					if (!signSuccess) {
+						[Utils showError:self title:signError ?: @"Couldn't sign restored Geode/mod files." error:nil];
+					} else {
+						AppLog(@"Signed restored Geode/mod files.");
+					}
+					[self.tableView reloadData];
+				}];
 			}];
 		}
 		[self.tableView reloadData];

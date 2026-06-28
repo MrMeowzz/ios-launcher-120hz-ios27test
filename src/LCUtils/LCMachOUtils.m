@@ -406,14 +406,28 @@ BOOL LCPatchLibWithANGLE(const char* path, struct mach_header_64* header, bool w
 
 NSString* LCParseMachO(const char* path, bool readOnly, LCParseMachOCallback callback) {
 	int fd = open(path, readOnly ? O_RDONLY : O_RDWR, (mode_t)readOnly ? 0400 : 0600);
-	struct stat s;
-	fstat(fd, &s);
-	void* map = mmap(NULL, s.st_size, readOnly ? PROT_READ : (PROT_READ | PROT_WRITE), readOnly ? MAP_PRIVATE : MAP_SHARED, fd, 0);
-	if (map == MAP_FAILED) {
-		AppLog(@"LCParseMachO error: %@", [NSString stringWithFormat:@"Failed to map %s: %s", path, strerror(errno)]);
-		return [NSString stringWithFormat:@"Failed to map %s: %s", path, strerror(errno)];
+	if (fd < 0) {
+		AppLog(@"LCParseMachO error: %@", [NSString stringWithFormat:@"Failed to open %s: %s", path, strerror(errno)]);
+		return [NSString stringWithFormat:@"Failed to open %s: %s", path, strerror(errno)];
 	}
 
+	struct stat s;
+	if (fstat(fd, &s) != 0) {
+		NSString* error = [NSString stringWithFormat:@"Failed to stat %s: %s", path, strerror(errno)];
+		AppLog(@"LCParseMachO error: %@", error);
+		close(fd);
+		return error;
+	}
+
+	void* map = mmap(NULL, s.st_size, readOnly ? PROT_READ : (PROT_READ | PROT_WRITE), readOnly ? MAP_PRIVATE : MAP_SHARED, fd, 0);
+	if (map == MAP_FAILED) {
+		NSString* error = [NSString stringWithFormat:@"Failed to map %s: %s", path, strerror(errno)];
+		AppLog(@"LCParseMachO error: %@", error);
+		close(fd);
+		return error;
+	}
+
+	NSString* parseError = nil;
 	uint32_t magic = *(uint32_t*)map;
 	if (magic == FAT_CIGAM) {
 		// Find compatible slice
@@ -429,16 +443,18 @@ NSString* LCParseMachO(const char* path, bool readOnly, LCParseMachOCallback cal
 		callback(path, (struct mach_header_64*)map, fd, map);
 	} else if (magic == MH_MAGIC) {
 		AppLog(@"LCParseMachO error: 32-bit app is not supported");
-		return @"32-bit app is not supported";
+		parseError = @"32-bit app is not supported";
 	} else {
 		AppLog(@"LCParseMachO error: Not a Mach-O file");
-		return @"Not a Mach-O file";
+		parseError = @"Not a Mach-O file";
 	}
 
-	msync(map, s.st_size, MS_SYNC);
+	if (!readOnly && !parseError) {
+		msync(map, s.st_size, MS_SYNC);
+	}
 	munmap(map, s.st_size);
 	close(fd);
-	return nil;
+	return parseError;
 }
 
 void LCChangeExecUUID(struct mach_header_64* header) {

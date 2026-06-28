@@ -608,7 +608,7 @@ for func in list:
 }
 + (void)patchGeode:(void (^)(BOOL success, NSString* error))completionHandler {
 	BOOL useANGLE = [[Utils getPrefs] boolForKey:@"USE_MAX_FPS"];
-	if ([UIScreen mainScreen].maximumFramesPerSecond <= 60 && ![[Utils getPrefs] boolForKey:@"FORCE_ANGLE"]) {
+	if (useANGLE && [UIScreen mainScreen].maximumFramesPerSecond <= 60 && ![[Utils getPrefs] boolForKey:@"FORCE_ANGLE"]) {
 		AppLog(@"Skipping Geode / mod ANGLE patch because device doesn't support ProMotion.");
 		return completionHandler(YES, @"");
 	}
