@@ -681,22 +681,67 @@ extern SecTaskRef SecTaskCreateFromSelf(CFAllocatorRef allocator) __attribute__(
 	int res = extract(fileToExtract, extractionPath, nil);
 	return completion(res);
 }
-+ (void)copyOrigBinary:(void (^)(BOOL success, NSString* error))completionHandler {
-	if (![Utils isSandboxed]) return completionHandler(NO, @"Not sandboxed");
-	NSURL* bundlePath = [[LCPath bundlePath] URLByAppendingPathComponent:[Utils gdBundleName]];
-	NSURL* from = [bundlePath URLByAppendingPathComponent:@"GeometryOriginal"];
-	NSURL* to = [bundlePath URLByAppendingPathComponent:@"GeometryJump"];
-	NSFileManager* fm = [NSFileManager defaultManager];
-	NSError* error;
-	if (![fm fileExistsAtPath:from.path]) {
-		[fm copyItemAtURL:to toURL:from error:&error];
-		if (error) {
-			return completionHandler(NO, [NSString stringWithFormat:@"Couldn't copy binary: %@", error.localizedDescription]);
++ (BOOL)binaryAtPathContainsString:(NSString*)path string:(NSString*)needle {
+	NSData* data = [NSData dataWithContentsOfFile:path];
+	if (!data || data.length == 0 || needle.length == 0) {
+		return NO;
+	}
+
+	NSData* needleData = [needle dataUsingEncoding:NSUTF8StringEncoding];
+	if (!needleData || needleData.length == 0 || needleData.length > data.length) {
+		return NO;
+	}
+
+	const uint8_t* bytes = data.bytes;
+	const uint8_t* needleBytes = needleData.bytes;
+
+	for (NSUInteger i = 0; i + needleData.length <= data.length; i++) {
+		if (memcmp(bytes + i, needleBytes, needleData.length) == 0) {
+			return YES;
 		}
 	}
-	if (![fm fileExistsAtPath:from.path]) {
-		return completionHandler(NO, @"Couldn't find original binary.");
+
+	return NO;
+}
+
++ (void)copyOrigBinary:(void (^)(BOOL success, NSString* error))completionHandler {
+	if (![Utils isSandboxed]) {
+		return completionHandler(NO, @"Not sandboxed");
 	}
+
+	NSURL* bundlePath = [[LCPath bundlePath] URLByAppendingPathComponent:[Utils gdBundleName]];
+	NSURL* originalURL = [bundlePath URLByAppendingPathComponent:@"GeometryOriginal"];
+	NSURL* currentURL = [bundlePath URLByAppendingPathComponent:@"GeometryJump"];
+
+	NSFileManager* fm = [NSFileManager defaultManager];
+
+	if (![fm fileExistsAtPath:currentURL.path]) {
+		return completionHandler(NO, @"GeometryJump is missing.");
+	}
+
+	if (![fm fileExistsAtPath:originalURL.path]) {
+		BOOL currentIsANGLEPatched = [Utils binaryAtPathContainsString:currentURL.path string:@"ANGLEGLKit.framework/ANGLEGLKit"];
+
+		if (currentIsANGLEPatched) {
+			return completionHandler(NO, @"GeometryOriginal is missing, but GeometryJump is already ANGLE-patched. Reimport a clean Geometry Dash IPA so the launcher can create a clean backup.");
+		}
+
+		NSError* error = nil;
+		[fm copyItemAtURL:currentURL toURL:originalURL error:&error];
+
+		if (error) {
+			return completionHandler(NO, [NSString stringWithFormat:@"Couldn't copy original binary: %@", error.localizedDescription]);
+		}
+
+		AppLog(@"Created clean GeometryOriginal backup.");
+	}
+
+	BOOL originalIsANGLEPatched = [Utils binaryAtPathContainsString:originalURL.path string:@"ANGLEGLKit.framework/ANGLEGLKit"];
+
+	if (originalIsANGLEPatched) {
+		return completionHandler(NO, @"GeometryOriginal is already ANGLE-patched. Reimport a clean Geometry Dash IPA because the backup is contaminated.");
+	}
+
 	return completionHandler(YES, @"Success");
 }
 + (BOOL)isSapphireDay {

@@ -247,6 +247,79 @@ extern NSString *lcAppUrlScheme;
 	}
 }
 
+- (BOOL)binaryAtPath:(NSString*)path containsString:(NSString*)needle {
+	NSData* data = [NSData dataWithContentsOfFile:path];
+	if (!data || data.length == 0 || needle.length == 0) {
+		return NO;
+	}
+
+	NSData* needleData = [needle dataUsingEncoding:NSUTF8StringEncoding];
+	if (!needleData || needleData.length == 0 || needleData.length > data.length) {
+		return NO;
+	}
+
+	NSRange foundRange = [data rangeOfData:needleData options:0 range:NSMakeRange(0, data.length)];
+	return foundRange.location != NSNotFound;
+}
+
+- (BOOL)restoreGeometryJumpToOpenGLESWithBundle:(NSURL*)bundlePath errorString:(NSString**)errorString {
+	NSFileManager* fm = [NSFileManager defaultManager];
+
+	NSURL* originalURL = [bundlePath URLByAppendingPathComponent:@"GeometryOriginal"];
+	NSURL* currentURL = [bundlePath URLByAppendingPathComponent:@"GeometryJump"];
+
+	if (![fm fileExistsAtPath:originalURL.path]) {
+		if (errorString) {
+			*errorString = @"GeometryOriginal is missing. Reimport a clean Geometry Dash IPA once, then turn 120Hz on/off again.";
+		}
+		return NO;
+	}
+
+	if ([self binaryAtPath:originalURL.path containsString:@"ANGLEGLKit.framework/ANGLEGLKit"]) {
+		if (errorString) {
+			*errorString = @"GeometryOriginal is contaminated because it already contains ANGLEGLKit. Reimport a clean Geometry Dash IPA once to fix the backup.";
+		}
+		return NO;
+	}
+
+	NSError* err = nil;
+
+	if ([fm fileExistsAtPath:currentURL.path]) {
+		[fm removeItemAtURL:currentURL error:&err];
+		if (err) {
+			if (errorString) {
+				*errorString = [NSString stringWithFormat:@"Couldn't remove current GeometryJump: %@", err.localizedDescription];
+			}
+			return NO;
+		}
+	}
+
+	err = nil;
+	[fm copyItemAtURL:originalURL toURL:currentURL error:&err];
+	if (err) {
+		if (errorString) {
+			*errorString = [NSString stringWithFormat:@"Couldn't restore GeometryJump from GeometryOriginal: %@", err.localizedDescription];
+		}
+		return NO;
+	}
+
+	NSString* restoreError = LCParseMachO(currentURL.path.UTF8String, false, ^(const char* path, struct mach_header_64* header, int fd, void* filePtr) {
+		LCPatchExecSlice(path, header, [[Utils getPrefs] boolForKey:@"ENTERPRISE_MODE"], false);
+	});
+
+	if (restoreError) {
+		if (errorString) {
+			*errorString = [NSString stringWithFormat:@"Failed to force-restore GeometryJump to OpenGLES: %@", restoreError];
+		}
+		return NO;
+	}
+
+	[[Utils getPrefs] setObject:@"NO" forKey:@"PATCH_CHECKSUM"];
+	AppLog(@"Force-restored GeometryJump to OpenGLES.");
+
+	return YES;
+}
+
 - (void)finishANGLESigningWithCompletion:(void (^)(BOOL success, NSString* error))completion success:(BOOL)success error:(NSString*)error {
 	dispatch_async(dispatch_get_main_queue(), ^{
 		completion(success, error);
@@ -1153,21 +1226,61 @@ extern NSString *lcAppUrlScheme;
 		} visible:^BOOL() {
 			return [Utils isSandboxed] && ![[Utils getPrefs] integerForKey:@"ENTERPRISE_MODE"];
 		} prefsKey:nil switchTag:0 action:^{
-			[Utils copyOrigBinary:^(BOOL isSuccess, NSString *errorStr) {
-				if (!isSuccess) {
-					[Utils showError:self title:[NSString stringWithFormat:@"Failed to copy Geometry Dash: %@", errorStr] error:nil];
-					return;
+			+ (BOOL)binaryAtPathContainsString:(NSString*)path string:(NSString*)needle {
+				NSData* data = [NSData dataWithContentsOfFile:path];
+				if (!data || data.length == 0 || needle.length == 0) {
+					return NO;
 				}
-				[_root signApp:YES completionHandler:^(BOOL success, NSString* error) {
-					dispatch_async(dispatch_get_main_queue(), ^{
-						if (!success) {
-							[Utils showError:self title:error error:nil];
-						} else {
-							[Utils showNotice:self title:@"Resign successful!"];
-						}
-					});
-				}];
-			}];
+
+				NSData* needleData = [needle dataUsingEncoding:NSUTF8StringEncoding];
+				if (!needleData || needleData.length == 0 || needleData.length > data.length) {
+					return NO;
+				}
+
+				NSRange foundRange = [data rangeOfData:needleData options:0 range:NSMakeRange(0, data.length)];
+				return foundRange.location != NSNotFound;
+			}
+
+			+ (void)copyOrigBinary:(void (^)(BOOL success, NSString* error))completionHandler {
+				if (![Utils isSandboxed]) {
+					return completionHandler(NO, @"Not sandboxed");
+				}
+
+				NSURL* bundlePath = [[LCPath bundlePath] URLByAppendingPathComponent:[Utils gdBundleName]];
+				NSURL* originalURL = [bundlePath URLByAppendingPathComponent:@"GeometryOriginal"];
+				NSURL* currentURL = [bundlePath URLByAppendingPathComponent:@"GeometryJump"];
+
+				NSFileManager* fm = [NSFileManager defaultManager];
+
+				if (![fm fileExistsAtPath:currentURL.path]) {
+					return completionHandler(NO, @"GeometryJump is missing.");
+				}
+
+				if (![fm fileExistsAtPath:originalURL.path]) {
+					BOOL currentIsANGLEPatched = [Utils binaryAtPathContainsString:currentURL.path string:@"ANGLEGLKit.framework/ANGLEGLKit"];
+
+					if (currentIsANGLEPatched) {
+						return completionHandler(NO, @"GeometryOriginal is missing, but GeometryJump is already ANGLE-patched. Reimport a clean Geometry Dash IPA so the launcher can create a clean OpenGLES backup.");
+					}
+
+					NSError* error = nil;
+					[fm copyItemAtURL:currentURL toURL:originalURL error:&error];
+
+					if (error) {
+						return completionHandler(NO, [NSString stringWithFormat:@"Couldn't copy original binary: %@", error.localizedDescription]);
+					}
+
+					AppLog(@"Created clean GeometryOriginal backup.");
+				}
+
+				BOOL originalIsANGLEPatched = [Utils binaryAtPathContainsString:originalURL.path string:@"ANGLEGLKit.framework/ANGLEGLKit"];
+
+				if (originalIsANGLEPatched) {
+					return completionHandler(NO, @"GeometryOriginal is already ANGLE-patched. Reimport a clean Geometry Dash IPA because the backup is contaminated.");
+				}
+
+				return completionHandler(YES, @"Success");
+			}
 		} custom:nil],
 		[Setting create:@"Allow Importing Cert".loc type:SettingTypeToggle disabled:nil visible:^BOOL() {
 			return [Utils isSandboxed] && ![[Utils getPrefs] integerForKey:@"ENTERPRISE_MODE"];
@@ -1771,7 +1884,7 @@ extern NSString *lcAppUrlScheme;
 		[Utils toggleKey:@"MANUAL_IMPORT_CERT"];
 		[self.tableView reloadData];
 		break;
-	case 20:
+	case 20: {
 		if ([sender isOn]) {
 			if ([UIScreen mainScreen].maximumFramesPerSecond <= 60 && ![[Utils getPrefs] boolForKey:@"FORCE_ANGLE"]) {
 				[Utils showError:self title:@"Your device does not support refresh rates above 60 Hz (ProMotion)! You must own a Pro device (anything that is iPhone 13 Pro or higher. iPhone 12 Pro does not have ProMotion) or another device that supports >60 Hz.\n\nIf you've enabled \"Limit Frame Rate\", disable it by opening the Settings app and navigating to Accessibility -> Motion -> turn off Limit Frame Rate. If that option isn't available, your device doesn't support ProMotion." error:nil];
@@ -1780,18 +1893,24 @@ extern NSString *lcAppUrlScheme;
 			}
 
 			UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Warning" message:@"Enabling this option is experimental, as it changes the rendering engine Geometry Dash, Geode, and installed mods use to support the maximum refresh rate. Some mods may have graphical issues with ANGLEGLKit. Only enable this if you are okay with possible rendering differences.\n\nWould you like to enable anyways? You can always disable it later.".loc preferredStyle:UIAlertControllerStyleAlert];
+
 			UIAlertAction* okAction = [UIAlertAction actionWithTitle:@"Enable" style:UIAlertActionStyleDestructive handler:^(UIAlertAction* _Nonnull action) {
 				[Utils copyOrigBinary:^(BOOL isSuccess, NSString *errorStr) {
 					if (!isSuccess) {
-						[Utils showError:self title:[NSString stringWithFormat:@"Failed to copy Geometry Dash: %@", errorStr] error:nil];
+						[[Utils getPrefs] setBool:NO forKey:@"USE_MAX_FPS"];
+						[sender setOn:NO animated:YES];
+						[Utils showError:self title:[NSString stringWithFormat:@"Failed to prepare clean Geometry Dash backup: %@", errorStr] error:nil];
 						[self.tableView reloadData];
 						return;
 					}
 
 					NSFileManager* fm = [NSFileManager defaultManager];
 					NSURL* bundlePath = [[LCPath bundlePath] URLByAppendingPathComponent:[Utils gdBundleName]];
+
 					NSError* frameworkError = nil;
 					if (![self copyANGLEFrameworksIntoBundle:bundlePath error:&frameworkError]) {
+						[[Utils getPrefs] setBool:NO forKey:@"USE_MAX_FPS"];
+						[sender setOn:NO animated:YES];
 						[Utils showError:self title:[NSString stringWithFormat:@"Failed to copy ANGLEGLKit frameworks: %@", frameworkError.localizedDescription ?: @"Unknown error"] error:nil];
 						[self.tableView reloadData];
 						return;
@@ -1802,6 +1921,7 @@ extern NSString *lcAppUrlScheme;
 						NSString* caHighFPSTarget = [NSBundle.mainBundle.privateFrameworksPath stringByAppendingPathComponent:@"CAHighFPS.dylib"];
 
 						[fm removeItemAtPath:caHighFPSPath error:nil];
+
 						NSError* caErr = nil;
 						[fm copyItemAtPath:caHighFPSTarget toPath:caHighFPSPath error:&caErr];
 
@@ -1814,9 +1934,11 @@ extern NSString *lcAppUrlScheme;
 
 					NSString* infoPath = [bundlePath URLByAppendingPathComponent:@"Info.plist"].path;
 					NSMutableDictionary* infoDict = [NSMutableDictionary dictionaryWithContentsOfFile:infoPath];
+
 					if (infoDict) {
 						infoDict[@"CADisableMinimumFrameDuration"] = @YES;
 						infoDict[@"CADisableMinimumFrameDurationOnPhone"] = @YES;
+
 						if ([infoDict writeToFile:infoPath atomically:YES]) {
 							AppLog(@"Added ProMotion Info.plist keys to installed GD bundle.");
 						} else {
@@ -1827,11 +1949,15 @@ extern NSString *lcAppUrlScheme;
 					}
 
 					AppLog(@"Patching Geometry Dash executable with ANGLEGLKit load command...");
+
 					NSString* execPath = [bundlePath URLByAppendingPathComponent:@"GeometryJump"].path;
 					NSString* parseError = LCParseMachO(execPath.UTF8String, false, ^(const char* path, struct mach_header_64* header, int fd, void* filePtr) {
 						LCPatchExecSlice(path, header, [[Utils getPrefs] boolForKey:@"ENTERPRISE_MODE"], true);
 					});
+
 					if (parseError) {
+						[[Utils getPrefs] setBool:NO forKey:@"USE_MAX_FPS"];
+						[sender setOn:NO animated:YES];
 						[Utils showError:self title:[NSString stringWithFormat:@"Failed to patch Geometry Dash: %@", parseError] error:nil];
 						[self.tableView reloadData];
 						return;
@@ -1840,6 +1966,7 @@ extern NSString *lcAppUrlScheme;
 					[[Utils getPrefs] setBool:YES forKey:@"USE_MAX_FPS"];
 
 					NSString* patchChecksum = [Patcher getPatchChecksum:[bundlePath URLByAppendingPathComponent:@"GeometryOriginal"] withSafeMode:NO];
+
 					if (patchChecksum.length > 0) {
 						[[Utils getPrefs] setObject:patchChecksum forKey:@"PATCH_CHECKSUM"];
 						AppLog(@"Stored ANGLE patch checksum: %@", patchChecksum);
@@ -1849,72 +1976,93 @@ extern NSString *lcAppUrlScheme;
 
 					[Patcher patchGeode:^(BOOL success, NSString *error) {
 						AppLog(@"Patched Geode/mods for ANGLEGLKit (Success: %@, Error: %@)", success ? @"YES" : @"NO", error);
+
 						if (!success) {
 							[Utils showError:self title:[NSString stringWithFormat:@"Failed to patch Geode/mods: %@", error ?: @"Unknown error"] error:nil];
 							[self.tableView reloadData];
 							return;
 						}
+
 						[self signANGLEPatchedContentWithCompletion:^(BOOL signSuccess, NSString* signError) {
 							if (!signSuccess) {
 								[Utils showError:self title:signError ?: @"Couldn't sign ANGLE-patched files." error:nil];
 							} else {
 								AppLog(@"Signed ANGLE-patched Geode/mod files.");
 							}
+
 							[self.tableView reloadData];
 						}];
 					}];
 				}];
 			}];
+
 			UIAlertAction* cancelAction = [UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction* _Nonnull action) {
+				[[Utils getPrefs] setBool:NO forKey:@"USE_MAX_FPS"];
+				[sender setOn:NO animated:YES];
 				[self.tableView reloadData];
 			}];
+
 			[alert addAction:okAction];
 			[alert addAction:cancelAction];
 			[self presentViewController:alert animated:YES completion:nil];
 		} else {
-			[[Utils getPrefs] setBool:NO forKey:@"USE_MAX_FPS"];
 			NSFileManager* fm = [NSFileManager defaultManager];
 			NSURL* bundlePath = [[LCPath bundlePath] URLByAppendingPathComponent:[Utils gdBundleName]];
 
+			NSString* restoreErrorString = nil;
+			if (![self restoreGeometryJumpToOpenGLESWithBundle:bundlePath errorString:&restoreErrorString]) {
+				[sender setOn:YES animated:YES];
+				[[Utils getPrefs] setBool:YES forKey:@"USE_MAX_FPS"];
+				[Utils showError:self title:restoreErrorString ?: @"Failed to restore Geometry Dash to OpenGLES." error:nil];
+				[self.tableView reloadData];
+				return;
+			}
+
+			[[Utils getPrefs] setBool:NO forKey:@"USE_MAX_FPS"];
 			[self removeANGLEFrameworksFromBundle:bundlePath];
 
-			if (![fm fileExistsAtPath:[bundlePath URLByAppendingPathComponent:@"GeometryOriginal"].path]) {
-				AppLog(@"Not restoring binary because GeometryOriginal is missing.");
-			} else {
-				NSError* err = nil;
-				[fm removeItemAtURL:[bundlePath URLByAppendingPathComponent:@"GeometryJump"] error:&err];
-				if (err) {
-					AppLog(@"Couldn't remove patched binary: %@", err);
-				} else {
-					[fm copyItemAtURL:[bundlePath URLByAppendingPathComponent:@"GeometryOriginal"] toURL:[bundlePath URLByAppendingPathComponent:@"GeometryJump"] error:&err];
-					if (err) {
-						AppLog(@"Couldn't copy binary: %@", err);
-					} else {
-						[[Utils getPrefs] setObject:@"NO" forKey:@"PATCH_CHECKSUM"];
-						AppLog(@"Restored original Geometry Dash binary.");
-					}
+			NSString* infoPath = [bundlePath URLByAppendingPathComponent:@"Info.plist"].path;
+			NSMutableDictionary* infoDict = [NSMutableDictionary dictionaryWithContentsOfFile:infoPath];
+
+			if (infoDict) {
+				[infoDict removeObjectForKey:@"CADisableMinimumFrameDuration"];
+				[infoDict removeObjectForKey:@"CADisableMinimumFrameDurationOnPhone"];
+
+				if ([infoDict writeToFile:infoPath atomically:YES]) {
+					AppLog(@"Removed ProMotion Info.plist keys from installed GD bundle.");
 				}
+			}
+
+			NSString* caHighFPSPath = [bundlePath URLByAppendingPathComponent:@"CAHighFPS.dylib"].path;
+			if ([fm fileExistsAtPath:caHighFPSPath]) {
+				[fm removeItemAtPath:caHighFPSPath error:nil];
+				AppLog(@"Removed CAHighFPS.dylib from GD bundle.");
 			}
 
 			[Patcher patchGeode:^(BOOL success, NSString *error) {
 				AppLog(@"Restored Geode/mods OpenGLES state (Success: %@, Error: %@)", success ? @"YES" : @"NO", error);
+
 				if (!success) {
 					[Utils showError:self title:[NSString stringWithFormat:@"Failed to restore Geode/mods: %@", error ?: @"Unknown error"] error:nil];
 					[self.tableView reloadData];
 					return;
 				}
+
 				[self signANGLEPatchedContentWithCompletion:^(BOOL signSuccess, NSString* signError) {
 					if (!signSuccess) {
 						[Utils showError:self title:signError ?: @"Couldn't sign restored Geode/mod files." error:nil];
 					} else {
 						AppLog(@"Signed restored Geode/mod files.");
 					}
+
 					[self.tableView reloadData];
 				}];
 			}];
 		}
+
 		[self.tableView reloadData];
 		break;
+	}
 	case 21:
 		[Utils toggleKey:@"FORCE_TXM"];
 		break;
